@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic>=2
+litellm
+langfuse<3
+langgraph>=0.4
+qdrant-client>=1.10
+fastembed
+psycopg[binary]>=3.1
+httpx
+mcp
+chainlit
+# docling   # uncomment for PDF ingestion (large download)

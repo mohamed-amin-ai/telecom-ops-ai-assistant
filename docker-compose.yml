@@ -1,0 +1,68 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes: [qdrant_data:/qdrant/storage]
+
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: telecom
+      POSTGRES_PASSWORD: telecom
+      POSTGRES_DB: telecom
+    ports: ["5432:5432"]
+    volumes:
+      - tsdb_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  langfuse-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes: [lfdb_data:/var/lib/postgresql/data]
+
+  langfuse:
+    image: langfuse/langfuse:2
+    depends_on: [langfuse-db]
+    ports: ["3000:3000"]
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: change-me
+      SALT: change-me
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]          # docker compose --profile local up
+    ports: ["11434:11434"]
+    volumes: [ollama_data:/root/.ollama]
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      FASTEMBED_CACHE_PATH: /cache
+    depends_on: [qdrant, timescale]
+    ports: ["8000:8000"]
+    volumes:
+      - ./data:/app/data
+      - fastembed_cache:/cache
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  ui:
+    build: .
+    env_file: .env
+    depends_on: [api]
+    environment:
+      API_URL: http://api:8000
+    ports: ["8080:8080"]
+    command: chainlit run ui/app.py --host 0.0.0.0 --port 8080 --headless
+
+volumes:
+  qdrant_data:
+  tsdb_data:
+  lfdb_data:
+  ollama_data:
+  fastembed_cache:
