@@ -1,6 +1,8 @@
 """End-to-end generation eval with an LLM judge (correctness, faithfulness, abstention).
-Run:  python -m evals.run_gen_eval [path/to/golden.jsonl] [limit]
+Run:  python -m evals.run_gen_eval [path] [--limit N] [--min-pass X] [--min-faithful X]
+--limit N samples N answerable questions plus a few unanswerable ones.
 Uses the configured retrieval settings (RETRIEVAL_MODE / RERANK) and JUDGE_MODEL."""
+import argparse
 import json
 import re
 import sys
@@ -30,10 +32,14 @@ def judge(question: str, reference: str, ans: str, contexts: list[str]) -> dict:
         return {}
 
 
-def main(path: str, limit: int | None) -> None:
+def main(path: str, limit: int | None, min_pass: float, min_faithful: float) -> None:
     with open(path) as f:
         rows = [json.loads(line) for line in f if line.strip()]
-    rows = rows[:limit] if limit else rows
+    if limit:
+        ans = [r for r in rows if r["answerable"]]
+        una = [r for r in rows if not r["answerable"]]
+        step = max(1, len(ans) // limit)
+        rows = ans[::step][:limit] + una[: max(3, limit // 6)]
     ok = faithful = 0
     n_ans = n_unans = 0
     failures = []
@@ -50,18 +56,27 @@ def main(path: str, limit: int | None) -> None:
         ok += good
         if not good:
             failures.append({"id": r["id"], "question": r["question"], "answer": out["answer"]})
+    pass_rate, faith = ok / len(rows), faithful / len(rows)
     print(json.dumps({
         "n": len(rows), "answerable": n_ans, "unanswerable": n_unans,
-        "pass_rate": round(ok / len(rows), 3),
-        "faithfulness": round(faithful / len(rows), 3),
+        "pass_rate": round(pass_rate, 3),
+        "faithfulness": round(faith, 3),
         "retrieval_mode": settings.retrieval_mode, "rerank": settings.rerank,
         "llm": settings.llm_model, "judge": settings.judge_model,
     }))
     with open("evals/last_failures.json", "w") as f:
         json.dump(failures, f, indent=2)
     print(f"{len(failures)} failures written to evals/last_failures.json")
+    if pass_rate < min_pass or faith < min_faithful:
+        print(f"BELOW FLOOR (min-pass {min_pass}, min-faithful {min_faithful})")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "evals/golden_set.jsonl",
-         int(sys.argv[2]) if len(sys.argv) > 2 else None)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("path", nargs="?", default="evals/golden_set.jsonl")
+    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--min-pass", type=float, default=0.0)
+    ap.add_argument("--min-faithful", type=float, default=0.0)
+    a = ap.parse_args()
+    main(a.path, a.limit, a.min_pass, a.min_faithful)
