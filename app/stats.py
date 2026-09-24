@@ -19,7 +19,9 @@ def profile_series(points: list[dict], recent_hours: int = 4) -> dict:
     if not recent or not base:
         return {"n": len(parsed), "note": "insufficient data"}
     b_mean, b_sd = mean(base), pstdev(base)
-    scale = max(b_sd, 0.05 * abs(b_mean), 1e-6)  # floor avoids absurd z on flat series
+    # Floor at 1% of the baseline level: avoids absurd z on near-flat series while still
+    # letting a few points of drop register on ratio KPIs that sit near 100%.
+    scale = max(b_sd, 0.01 * abs(b_mean), 1e-6)
     z = (mean(recent) - b_mean) / scale
     return {
         "n": len(parsed),

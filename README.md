@@ -34,16 +34,38 @@ docker compose exec api python -m scripts.seed_kpis   # synthetic KPIs with 3 in
   `docker compose up -d api`.
 - Local model: `docker compose exec ollama ollama pull qwen2.5:7b-instruct`.
 
+## CI
+- `test`: ruff and pytest.
+- `stack`: builds and starts the whole compose stack (Qdrant, TimescaleDB, Langfuse, API, UI),
+  ingests the docs with real embeddings, checks retrieval floors, runs the rule-based
+  guardrail eval, lists the MCP tools, then runs `scripts/e2e_smoke.py` (incident flow with
+  approval, guardrail blocks, anomaly flags, UI and Langfuse health). The LLM is mocked
+  (`LLM_MOCK=1`), so no secrets are needed.
+- `live`: runs only when the `ANTHROPIC_API_KEY` repository secret is set. Guardrail eval with
+  the LLM classifier, the same smoke test against the real model, and the generation eval on a
+  30-question sample. The floors (pass 0.7, faithfulness 0.8, guardrail accuracy 0.9) are
+  untuned guesses: adjust them after your first run.
+
 ## Evals
 ```bash
 docker compose exec api python -m evals.run_eval          # retrieval: dense vs hybrid vs hybrid+rerank
-docker compose exec api python -m evals.run_gen_eval      # answers: correctness, faithfulness, abstention
+docker compose exec api python -m evals.run_gen_eval --limit 30   # answers: correctness, faithfulness, abstention
 docker compose exec api python -m evals.run_guard_eval    # guardrails: injection, privacy, scope, PII
 ```
 `evals/golden_set.jsonl` has 121 questions (110 answerable, 11 unanswerable) written against
 the 22 documents in `data/docs/`. `evals/guardrail_set.jsonl` has 38 input cases. Change `RETRIEVAL_MODE` / `RERANK` in `.env`, restart the
 api, and re-run `run_gen_eval` to compare configurations. Failures are written to
 `evals/last_failures.json`.
+
+### Measured in CI (real embeddings: bge-small + BM25 + MiniLM reranker, k=3, 110 answerable questions)
+| mode | hit@3 | MRR |
+|---|---|---|
+| dense | 0.982 | 0.959 |
+| hybrid | 0.991 | 0.973 |
+| hybrid + rerank | 0.991 | 0.986 |
+
+Numbers move by a few thousandths between runs. The corpus and questions are both synthetic, so retrieval is close to saturated and the
+differences are small. Real runbooks and harder questions will separate the modes more.
 
 ## Guardrails
 - **Input** (`/ask`): PII redaction (emails, phone numbers, IMSI/IMEI/MSISDN-length IDs),

@@ -9,8 +9,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install pytest ruff
@@ -24,7 +24,7 @@ jobs:
     needs: test
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure env (mock LLM)
         run: |
           cp .env.example .env
@@ -39,7 +39,7 @@ jobs:
         run: |
           docker compose exec -T api python -m evals.run_eval > retrieval.txt
           { echo '### Retrieval eval (real embeddings, k=3)'; echo '```'; cat retrieval.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          python scripts/check_eval.py --min-hit 0.5 < retrieval.txt
+          python scripts/check_eval.py --min-hit 0.9 --min-mrr 0.85 < retrieval.txt
       - name: Guardrail eval (rule-based cases)
         run: docker compose exec -T api python -m evals.run_guard_eval
       - name: MCP server tools
@@ -90,7 +90,7 @@ jobs:
       - id: key
         run: |
           if [ -n "$ANTHROPIC_API_KEY" ]; then echo "has_key=true" >> "$GITHUB_OUTPUT"; else echo "::notice::ANTHROPIC_API_KEY secret not set, skipping live LLM checks"; fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.key.outputs.has_key == 'true'
       - name: Configure env (real Anthropic)
         if: steps.key.outputs.has_key == 'true'
