@@ -13,24 +13,32 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install pytest ruff
+      - run: pip install -r requirements.txt pytest ruff
       - run: ruff check .
       - run: pytest -q
 
-  # Full compose stack with real Qdrant, TimescaleDB, Langfuse, real embeddings and the
-  # real agent graph. The LLM is mocked (LLM_MOCK=1), so no secrets are needed.
+  # Full compose stack: real Qdrant, TimescaleDB, Langfuse, real embeddings, the real agent
+  # graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing, judge
+  # JSON parsing) against a fake Anthropic server. This is not LLM_MOCK: it exercises every
+  # line between our code and the Anthropic wire format, just not real model quality.
   stack:
     runs-on: ubuntu-latest
     needs: test
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - name: Configure env (mock LLM)
+      - name: Configure env (fake Anthropic + Langfuse)
         run: |
           cp .env.example .env
-          sed -i 's/^LLM_MOCK=.*/LLM_MOCK=1/; s/^GUARD_LLM=.*/GUARD_LLM=0/; s/^RATE_LIMIT_PER_MIN=.*/RATE_LIMIT_PER_MIN=1000/' .env
+          {
+            echo "ANTHROPIC_API_KEY=ci-fake-key"
+            echo "ANTHROPIC_API_BASE=http://fake-anthropic:8099"
+            echo "RATE_LIMIT_PER_MIN=1000"
+            echo "LANGFUSE_PUBLIC_KEY=pk-lf-ci"
+            echo "LANGFUSE_SECRET_KEY=sk-lf-ci"
+          } >> .env
       - name: Build and start the stack
-        run: docker compose up -d --build --wait --wait-timeout 420
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build --wait --wait-timeout 420
       - name: Ingest docs (real embeddings)
         run: docker compose exec -T api python -m scripts.ingest
       - name: Seed KPIs
@@ -38,21 +46,27 @@ jobs:
       - name: Retrieval eval (real embeddings)
         run: |
           docker compose exec -T api python -m evals.run_eval > retrieval.txt
-          { echo '### Retrieval eval (real embeddings, k=3)'; echo '```'; cat retrieval.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           python scripts/check_eval.py --min-hit 0.9 --min-mrr 0.85 < retrieval.txt
-      - name: Guardrail eval (rule-based cases)
+      - name: Guardrail eval (rules + real LLM classifier call, via fake server)
         run: docker compose exec -T api python -m evals.run_guard_eval
       - name: MCP server tools
         run: docker compose exec -T api python -c "import asyncio; from app.mcp_server import mcp; print(sorted(t.name for t in asyncio.run(mcp.list_tools())))"
-      - name: Wait for Langfuse
-        run: |
-          for i in $(seq 1 40); do curl -sf http://localhost:3000/api/public/health && break; sleep 5; done
-      - name: End-to-end smoke
-        env:
-          LANGFUSE_URL: http://localhost:3000
+      - name: End-to-end smoke (real LiteLLM path via fake server)
         run: |
           set -o pipefail
           python scripts/e2e_smoke.py 2>&1 | tee smoke.txt
+      - name: End-to-end UI (Chainlit, headless browser)
+        run: |
+          pip install -q playwright
+          playwright install --with-deps chromium
+          set -o pipefail
+          python scripts/e2e_ui.py 2>&1 | tee ui.txt
+      - name: Confirm Langfuse received traces
+        env:
+          LANGFUSE_URL: http://localhost:3000
+          LANGFUSE_PUBLIC_KEY: pk-lf-ci
+          LANGFUSE_SECRET_KEY: sk-lf-ci
+        run: python scripts/check_langfuse.py
       - name: Publish results as annotations
         if: always()
         run: |
@@ -67,15 +81,16 @@ jobs:
               t = t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               print(f"::{level} title={title}::{t}")
           ann("notice", "retrieval eval (real embeddings)", "retrieval.txt")
-          ann("notice", "e2e smoke", "smoke.txt")
+          ann("notice", "e2e smoke (fake Anthropic)", "smoke.txt")
+          ann("notice", "e2e UI (fake Anthropic)", "ui.txt")
           ann("warning", "api container log (tail)", "api.log")
           PY
       - name: Container logs (on failure)
         if: failure()
-        run: docker compose logs --no-color --tail 200
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail 300
       - name: Tear down
         if: always()
-        run: docker compose down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
 
   # Same stack against the real Anthropic API. Runs only when the ANTHROPIC_API_KEY
   # repository secret exists (Settings > Secrets and variables > Actions).
@@ -112,6 +127,12 @@ jobs:
       - name: End-to-end smoke (real model)
         if: steps.key.outputs.has_key == 'true'
         run: python scripts/e2e_smoke.py
+      - name: End-to-end UI (real model)
+        if: steps.key.outputs.has_key == 'true'
+        run: |
+          pip install -q playwright
+          playwright install --with-deps chromium
+          python scripts/e2e_ui.py
       - name: Generation eval (LLM judge, 30 answerable + unanswerable)
         if: steps.key.outputs.has_key == 'true'
         run: |

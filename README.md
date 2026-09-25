@@ -4,7 +4,7 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 RAG + agentic assistant for telecom network operations. Alert in, then KPI profile and
-runbook retrieval, diagnosis, human approval, ticket, incident report. No AWS dependency.
+runbook retrieval, diagnosis, human approval, ticket, incident report. No cloud dependency.
 
 ```mermaid
 flowchart LR
@@ -37,10 +37,14 @@ docker compose exec api python -m scripts.seed_kpis   # synthetic KPIs with 3 in
 ## CI
 - `test`: ruff and pytest.
 - `stack`: builds and starts the whole compose stack (Qdrant, TimescaleDB, Langfuse, API, UI),
-  ingests the docs with real embeddings, checks retrieval floors, runs the rule-based
-  guardrail eval, lists the MCP tools, then runs `scripts/e2e_smoke.py` (incident flow with
-  approval, guardrail blocks, anomaly flags, UI and Langfuse health). The LLM is mocked
-  (`LLM_MOCK=1`), so no secrets are needed.
+  ingests the docs with real embeddings, checks retrieval floors, and runs the real LiteLLM
+  code path (guardrail classifier, agent, judge) against a fake Anthropic server
+  (`scripts/fake_anthropic.py`, `docker-compose.ci.yml`) so no API key is needed but every
+  line between our code and the Anthropic wire format still runs. It then runs
+  `scripts/e2e_smoke.py` (incident flow with approval, guardrail blocks, anomaly flags on
+  3 seeded cells), `scripts/e2e_ui.py` (headless-browser Chainlit flow: ask, incident, approve,
+  ticket), and `scripts/check_langfuse.py` (confirms traces actually arrived). Set `LLM_MOCK=1`
+  locally for a fast loop that skips the LLM entirely; CI does not use it.
 - `live`: runs only when the `ANTHROPIC_API_KEY` repository secret is set. Guardrail eval with
   the LLM classifier, the same smoke test against the real model, and the generation eval on a
   30-question sample. The floors (pass 0.7, faithfulness 0.8, guardrail accuracy 0.9) are
@@ -91,15 +95,38 @@ differences are small. Real runbooks and harder questions will separate the mode
 - `ui/app.py`: Chainlit UI
 - `evals/`: golden set, retrieval ablation, LLM-judge generation eval
 
+## Found and fixed by actually running it end to end
+`docker compose up` had never been run before the `stack` CI job below existed, because it
+was built and validated with stubbed embeddings and a mocked LLM. Running the real stack
+found two real bugs:
+- **LiteLLM rejects `temperature=0` for `claude-sonnet-5`** (only `temperature=1` is
+  accepted, and the error surfaces on every single call). `app/llm.py` now retries once
+  without `temperature` when this specific error is raised. Without this fix, every real
+  Anthropic call in this app would have failed immediately.
+- **The KPI anomaly check missed faults on ratio KPIs near 100%.** An 8-point RRC success
+  rate drop scored a z-score of only about -1.8 against the 3.0 threshold, because the
+  noise floor in `app/stats.py` was 5% of the baseline level, which is huge for a KPI that
+  normally varies by tenths of a point. Tightened to 1%.
+
+Both have regression tests (`tests/test_llm.py`, `tests/test_stats.py`), and both would
+have passed the earlier `LLM_MOCK=1` CI setup silently, because it never called LiteLLM or
+computed a real z-score.
+
 ## Limits
 - The 22 documents are synthetic: operational thresholds and policies are invented, and
   the two concept primers (16, 17) are written from general knowledge, so check them against
   the 3GPP specs before relying on them. Replace them with your own runbooks when you have
-  them.
-  Scores show the pipeline works and let you compare configurations, but the questions
-  overlap the docs closely, so expect high numbers. Add your own documents and harder,
-  paraphrased questions before drawing conclusions.
+  them. The golden set questions overlap the docs closely, so the retrieval scores above are
+  close to a ceiling and say more about the pipeline than about real-world quality. Add your
+  own documents and harder, paraphrased questions before drawing conclusions.
 - Guardrails are heuristic. Regex rules miss paraphrased attacks and the LLM classifier can
   err in both directions; grow `guardrail_set.jsonl` with real traffic.
 - The agent calls tools directly. The MCP server is for external clients.
 - Tickets go to `data/tickets.jsonl`, and agent state is in memory (lost on restart).
+- Not yet built: cloud deploy, RAGAS/DeepEval (the generation eval is a single LLM-judge
+  call), and `langchain-mcp-adapters` wiring so the agent calls its own MCP server instead
+  of the tool functions directly.
+- The `stack` CI job proves the real code paths run correctly against a fake Anthropic
+  server; it does not test real model quality. Only the `live` job (gated on the
+  `ANTHROPIC_API_KEY` secret) does that, and it currently does not run because that secret
+  isn't set.

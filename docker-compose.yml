@@ -76,12 +76,12 @@ services:
 
   ui:
     build: .
-    env_file: .env
-    environment:
-      API_URL: http://api:8000
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      API_URL: http://api:8000
+      API_KEY: ${API_KEY:-}
     ports: ["8080:8080"]
     command: chainlit run ui/app.py --host 0.0.0.0 --port 8080 --headless
     healthcheck:

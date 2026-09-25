@@ -1,0 +1,18 @@
+# Critical: chainlit's own __init__.py unconditionally calls
+# load_dotenv(os.path.join(os.getcwd(), ".env")) at import time, inside the container's
+# /app working directory. If .env is present in the build context it gets baked into the
+# image via `COPY . .`, and every service built from this image -- including ones that
+# should never see it, like ui -- ends up with its variables in os.environ regardless of
+# what docker-compose's own environment/env_file settings say for that service.
+.env
+.env.*
+!.env.example
+
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.chainlit/
+chainlit.md
+data/tickets.jsonl

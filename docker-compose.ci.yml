@@ -1,0 +1,30 @@
+# CI override: a fake Anthropic endpoint (exercises the real LiteLLM/guardrail/judge code
+# paths without a key or network) and a headless Langfuse project (pk-lf-ci / sk-lf-ci).
+services:
+  fake-anthropic:
+    build: .
+    command: python -m scripts.fake_anthropic
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8099/', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  langfuse:
+    environment:
+      LANGFUSE_INIT_ORG_ID: ci-org
+      LANGFUSE_INIT_ORG_NAME: ci
+      LANGFUSE_INIT_PROJECT_ID: ci-project
+      LANGFUSE_INIT_PROJECT_NAME: ci
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-ci
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-ci
+      LANGFUSE_INIT_USER_EMAIL: ci@example.com
+      LANGFUSE_INIT_USER_NAME: ci
+      LANGFUSE_INIT_USER_PASSWORD: ci-password-123
+
+  api:
+    depends_on:
+      fake-anthropic:
+        condition: service_healthy
+    environment:
+      ANTHROPIC_API_BASE: http://fake-anthropic:8099

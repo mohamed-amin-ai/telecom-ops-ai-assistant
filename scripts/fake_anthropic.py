@@ -1,0 +1,72 @@
+"""Minimal fake of the Anthropic Messages API for CI. It lets the REAL LiteLLM code path
+(request formation, response parsing, guardrail classifier JSON, judge JSON, Langfuse
+callbacks) run without an API key. It does not test model quality."""
+import json
+import re
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+TAG = re.compile(r"\[([\w.\-]+#\d+)\]")
+OFF_TOPIC = ("poem", "pizza", "python script", "world cup", "koshari")
+HARMFUL = ("jam the cell", "take down the core")
+
+
+def _text(x) -> str:
+    if isinstance(x, str):
+        return x
+    return " ".join(b.get("text", "") for b in x if isinstance(b, dict))
+
+
+def reply(system: str, user: str) -> str:
+    low = user.lower()
+    if system.startswith("You are an input filter"):
+        label = ("off_topic" if any(w in low for w in OFF_TOPIC)
+                 else "harmful" if any(w in low for w in HARMFUL) else "on_topic")
+        return json.dumps({"label": label})
+    if system.startswith("You grade a RAG answer"):
+        ans = user.split("Answer:", 1)[-1].split("Context:", 1)[0].lower()
+        abstained = "does not cover" in ans
+        return json.dumps({"correct": not abstained, "faithful": True, "abstained": abstained})
+    tag = TAG.search(user)
+    if "incident report" in system:
+        return "Summary: capacity incident. Root cause per runbook. Follow-ups: capacity review."
+    if "NOC engineer" in system:
+        return f"Likely capacity issue on the cell. Next actions per [{tag.group(1)}]." if tag \
+            else "Insufficient data."
+    if "network operations assistant" in system:
+        return (f"Based on the runbook [{tag.group(1)}], follow the documented steps." if tag
+                else "The documentation does not cover this.")
+    return "OK"
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, code: int, body: dict):
+        raw = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        self._send(200, {"ok": True})
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        req = json.loads(self.rfile.read(n) or b"{}")
+        system = _text(req.get("system", ""))
+        users = [m for m in req.get("messages", []) if m.get("role") == "user"]
+        user = _text(users[-1]["content"]) if users else ""
+        text = reply(system, user)
+        self._send(200, {
+            "id": "msg_fake", "type": "message", "role": "assistant",
+            "model": req.get("model", "fake"), "stop_reason": "end_turn", "stop_sequence": None,
+            "content": [{"type": "text", "text": text}],
+            "usage": {"input_tokens": max(1, len(user) // 4), "output_tokens": max(1, len(text) // 4)},
+        })
+
+    def log_message(self, *a):  # keep CI logs quiet
+        pass
+
+
+if __name__ == "__main__":
+    ThreadingHTTPServer(("0.0.0.0", 8099), Handler).serve_forever()

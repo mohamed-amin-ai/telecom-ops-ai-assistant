@@ -48,6 +48,8 @@ check("api health", s == 200 and r == {"ok": True}, (s, r))
 s, r = call("POST", f"{API}/ask", {"question": "What is the ping-pong handover threshold and how much can I adjust hysteresis?"})
 srcs = {x["source"] for x in r.get("sources", [])} if s == 200 else set()
 check("ask returns an answer", s == 200 and bool(r.get("answer")) and not r.get("blocked"), (s, r))
+if os.getenv("EXPECT_NONMOCK") == "1":
+    check("answer came from the LLM path, not the mock", "Mock LLM response" not in str(r.get("answer")), r)
 check("retrieval finds the handover runbook", "03_handover_failure.md" in srcs, srcs)
 
 s, r = call("POST", f"{API}/ask", {"question": "What is the cell availability target?"})
