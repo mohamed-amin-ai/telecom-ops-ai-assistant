@@ -1,7 +1,5 @@
 import hmac
-import time
 import uuid
-from collections import defaultdict, deque
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -12,25 +10,19 @@ from .agent import graph
 from .config import settings
 from .guardrails import check_input
 from .rag import answer
+from .ratelimit import allow
 
 app = FastAPI(title="Telecom Ops Assistant")
-
-_hits: dict[str, deque] = defaultdict(deque)
 
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
-    """Per-client sliding window on the LLM-backed routes."""
+    """Per-client sliding window on the LLM-backed routes (Redis-backed; see ratelimit.py)."""
     limit = settings.rate_limit_per_min
     if limit > 0 and request.url.path.startswith(("/ask", "/incident")):
         ip = request.client.host if request.client else "unknown"
-        now = time.monotonic()
-        q = _hits[ip]
-        while q and now - q[0] > 60:
-            q.popleft()
-        if len(q) >= limit:
+        if not allow(ip, limit):
             return JSONResponse({"detail": "rate limit exceeded"}, status_code=429)
-        q.append(now)
     return await call_next(request)
 
 

@@ -1,11 +1,13 @@
 from typing import TypedDict
 
-from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from . import tools
 from .config import settings
+from .db import get_pool
 from .guardrails import check_output
 from .llm import chat
 from .rag import retrieve
@@ -55,8 +57,9 @@ def route(s: State) -> str:
     return "ticket" if s.get("approved") else END
 
 
-def ticket_node(s: State) -> dict:
-    return {"ticket": tools.create_ticket(s["alert"], s["diagnosis"])}
+def ticket_node(s: State, config: RunnableConfig) -> dict:
+    thread_id = config["configurable"]["thread_id"]
+    return {"ticket": tools.create_ticket(thread_id, s["alert"], s["diagnosis"])}
 
 
 def report_node(s: State) -> dict:
@@ -86,7 +89,12 @@ def build():
     g.add_conditional_edges("approval", route, {"ticket": "ticket", END: END})
     g.add_edge("ticket", "report")
     g.add_edge("report", END)
-    return g.compile(checkpointer=MemorySaver())
+    # Postgres-backed: an incident survives a process restart. Tables are created by
+    # scripts/migrate.py, not here -- .setup() is a schema-changing operation that
+    # shouldn't run implicitly on every import, especially with multiple replicas
+    # starting at once.
+    checkpointer = PostgresSaver(get_pool())
+    return g.compile(checkpointer=checkpointer)
 
 
 graph = build()

@@ -13,9 +13,18 @@ services:
     ports: ["5432:5432"]
     volumes:
       - tsdb_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U telecom -d telecom"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -52,6 +61,18 @@ services:
     ports: ["11434:11434"]
     volumes: [ollama_data:/root/.ollama]
 
+  # One-shot: applies db/migrations/*.sql (tracked in schema_migrations) and sets up
+  # LangGraph's own checkpoint tables. Re-run any time with:
+  #   docker compose run --rm migrate
+  migrate:
+    build: .
+    env_file: .env
+    depends_on:
+      timescale:
+        condition: service_healthy
+    command: python -m scripts.migrate
+    restart: "no"
+
   api:
     build: .
     env_file: .env
@@ -62,9 +83,12 @@ services:
         condition: service_started
       timescale:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports: ["8000:8000"]
     volumes:
-      - ./data:/app/data
       - fastembed_cache:/cache
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     healthcheck:
@@ -94,6 +118,7 @@ services:
 volumes:
   qdrant_data:
   tsdb_data:
+  redis_data:
   lfdb_data:
   ollama_data:
   fastembed_cache:

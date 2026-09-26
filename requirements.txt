@@ -4,10 +4,13 @@ pydantic>=2
 litellm
 langfuse<3
 langgraph>=0.4
+langgraph-checkpoint-postgres
 qdrant-client>=1.10
 fastembed
 psycopg[binary]>=3.1
+psycopg-pool
 httpx
+redis
 mcp
 chainlit==2.12.0   # pin: UI e2e test (scripts/e2e_ui.py) relies on this version's #chat-input id
 # docling   # uncomment for PDF ingestion (large download)

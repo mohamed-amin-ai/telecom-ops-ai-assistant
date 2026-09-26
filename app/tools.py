@@ -1,10 +1,9 @@
 import json
-from datetime import datetime, timezone
-from pathlib import Path
 
 import psycopg
 
 from .config import settings
+from .db import get_pool
 from .stats import profile_series
 
 
@@ -25,15 +24,37 @@ def kpi_profile(cell_id: str, kpi: str, lookback_hours: int = 72,
     return profile_series(get_kpis(cell_id, kpi, lookback_hours), recent_hours)
 
 
-def create_ticket(alert: dict, diagnosis: str) -> dict:
-    """Write action. Appends to data/tickets.jsonl. Only called after human approval."""
-    ticket = {
-        "id": f"INC-{int(datetime.now(timezone.utc).timestamp())}",
+def create_ticket(thread_id: str, alert: dict, diagnosis: str) -> dict:
+    """Write action. Persists to the tickets table. Only called after human approval."""
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "INSERT INTO tickets (thread_id, cell_id, kpi, alert, diagnosis) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at",
+            (thread_id, alert["cell_id"], alert["kpi"], json.dumps(alert), diagnosis),
+        ).fetchone()
+    return {
+        "id": f"INC-{row[0]}",
+        "thread_id": thread_id,
         "alert": alert,
         "diagnosis": diagnosis,
+        "created_at": row[1].isoformat(),
     }
-    path = Path("data/tickets.jsonl")
-    path.parent.mkdir(exist_ok=True)
-    with path.open("a") as f:
-        f.write(json.dumps(ticket) + "\n")
-    return ticket
+
+
+def get_ticket(ticket_id: str) -> dict | None:
+    """Look up a ticket by its external id (e.g. 'INC-42')."""
+    try:
+        pk = int(ticket_id.removeprefix("INC-"))
+    except ValueError:
+        return None
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT id, thread_id, cell_id, kpi, alert, diagnosis, created_at "
+            "FROM tickets WHERE id = %s", (pk,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": f"INC-{row[0]}", "thread_id": row[1], "cell_id": row[2], "kpi": row[3],
+        "alert": row[4], "diagnosis": row[5], "created_at": row[6].isoformat(),
+    }

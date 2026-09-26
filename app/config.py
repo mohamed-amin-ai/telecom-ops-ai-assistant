@@ -31,6 +31,7 @@ class Settings:
     guard_model: str = os.getenv("GUARD_MODEL", "anthropic/claude-haiku-4-5-20251001")
     rate_limit_per_min: int = int(os.getenv("RATE_LIMIT_PER_MIN", "30"))
     api_key: str = os.getenv("API_KEY", "")
+    redis_url: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 
 settings = Settings()

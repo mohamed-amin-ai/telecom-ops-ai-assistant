@@ -61,6 +61,11 @@ jobs:
           playwright install --with-deps chromium
           set -o pipefail
           python scripts/e2e_ui.py 2>&1 | tee ui.txt
+      - name: Concurrency smoke (fake Anthropic, real Postgres/Redis/Qdrant)
+        run: |
+          set -o pipefail
+          python scripts/load_test.py --concurrency 20 --total 100 \
+            --max-error-rate 0.05 --max-p95-s 20 | tee load.txt
       - name: Confirm Langfuse received traces
         env:
           LANGFUSE_URL: http://localhost:3000
@@ -83,6 +88,7 @@ jobs:
           ann("notice", "retrieval eval (real embeddings)", "retrieval.txt")
           ann("notice", "e2e smoke (fake Anthropic)", "smoke.txt")
           ann("notice", "e2e UI (fake Anthropic)", "ui.txt")
+          ann("notice", "concurrency smoke (20x, 100 requests)", "load.txt")
           ann("warning", "api container log (tail)", "api.log")
           PY
       - name: Container logs (on failure)
@@ -92,8 +98,10 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
 
-  # Same stack against the real Anthropic API. Runs only when the ANTHROPIC_API_KEY
-  # repository secret exists (Settings > Secrets and variables > Actions).
+  # Same stack against a real hosted LLM. Runs only when either ANTHROPIC_API_KEY or
+  # OPENROUTER_API_KEY exists as a repository secret (Settings > Secrets and variables >
+  # Actions). Anthropic is preferred if both are set; OpenRouter is a one-key alternative
+  # that proxies many providers/models, useful when you don't have a direct Anthropic key.
   live:
     runs-on: ubuntu-latest
     needs: stack
@@ -101,46 +109,70 @@ jobs:
     timeout-minutes: 45
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - id: key
         run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then echo "has_key=true" >> "$GITHUB_OUTPUT"; else echo "::notice::ANTHROPIC_API_KEY secret not set, skipping live LLM checks"; fi
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "provider=anthropic" >> "$GITHUB_OUTPUT"
+          elif [ -n "$OPENROUTER_API_KEY" ]; then
+            echo "provider=openrouter" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY secret is set, skipping live LLM checks"
+            echo "provider=none" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v5
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider != 'none'
       - name: Configure env (real Anthropic)
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider == 'anthropic'
         run: |
           grep -v -e '^ANTHROPIC_API_KEY=' -e '^RATE_LIMIT_PER_MIN=' .env.example > .env
           echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> .env
           echo "RATE_LIMIT_PER_MIN=1000" >> .env
+      - name: Configure env (OpenRouter)
+        if: steps.key.outputs.provider == 'openrouter'
+        run: |
+          grep -v -e '^OPENROUTER_API_KEY=' -e '^LLM_MODEL=' -e '^JUDGE_MODEL=' \
+                  -e '^GUARD_MODEL=' -e '^RATE_LIMIT_PER_MIN=' .env.example > .env
+          {
+            echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY"
+            # Model slugs as of this writing; update if OpenRouter's catalog changes.
+            echo "LLM_MODEL=openrouter/anthropic/claude-3.5-sonnet"
+            echo "JUDGE_MODEL=openrouter/anthropic/claude-3-haiku"
+            echo "GUARD_MODEL=openrouter/anthropic/claude-3-haiku"
+            echo "RATE_LIMIT_PER_MIN=1000"
+          } >> .env
       - name: Start the stack
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider != 'none'
         run: docker compose up -d --build --wait --wait-timeout 420
       - name: Ingest and seed
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider != 'none'
         run: |
           docker compose exec -T api python -m scripts.ingest
           docker compose exec -T api python -m scripts.seed_kpis
       - name: Guardrail eval (with LLM classifier)
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider != 'none'
         run: docker compose exec -T api python -m evals.run_guard_eval --min-accuracy 0.9
       - name: End-to-end smoke (real model)
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider != 'none'
         run: python scripts/e2e_smoke.py
       - name: End-to-end UI (real model)
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider != 'none'
         run: |
           pip install -q playwright
           playwright install --with-deps chromium
           python scripts/e2e_ui.py
       - name: Generation eval (LLM judge, 30 answerable + unanswerable)
-        if: steps.key.outputs.has_key == 'true'
+        if: steps.key.outputs.provider != 'none'
         run: |
           docker compose exec -T api python -m evals.run_gen_eval --limit 30 --min-pass 0.7 --min-faithful 0.8 | tee gen.txt
           { echo '### Generation eval (live)'; echo '```'; cat gen.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Concurrency smoke (real model)
+        if: steps.key.outputs.provider != 'none'
+        run: python scripts/load_test.py --concurrency 10 --total 30 --max-error-rate 0.1 --max-p95-s 60
       - name: Container logs (on failure)
-        if: failure() && steps.key.outputs.has_key == 'true'
+        if: failure() && steps.key.outputs.provider != 'none'
         run: docker compose logs --no-color --tail 200
       - name: Tear down
-        if: always() && steps.key.outputs.has_key == 'true'
+        if: always() && steps.key.outputs.provider != 'none'
         run: docker compose down -v
