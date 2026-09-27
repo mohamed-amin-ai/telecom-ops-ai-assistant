@@ -45,8 +45,13 @@ def _classify(text: str) -> str:
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         label = json.loads(m.group(0)).get("label", "on_topic") if m else "on_topic"
         return label if label in {"on_topic", "off_topic", "injection", "harmful"} else "on_topic"
-    except Exception:  # fail open: rules and the system prompt still apply
-        log.warning("guard classifier failed; allowing", exc_info=True)
+    except Exception as e:  # noqa: BLE001 -- fail open: rules and the system prompt still apply
+        # A concise message, not exc_info=True: this fires once per guarded request
+        # during any primary-provider outage, and a full stack trace repeated on every
+        # request would flood logs (and, as found here, bury the actual cause under
+        # duplicate noise when many requests fail the same way in a short span).
+        log.warning("guard classifier failed, allowing (fail open): %s: %s",
+                    type(e).__name__, e)
         return "on_topic"
 
 

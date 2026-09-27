@@ -1,8 +1,11 @@
+import logging
 import os
 
 import litellm
 
 from .config import settings
+
+log = logging.getLogger("llm")
 
 MOCK = os.getenv("LLM_MOCK") == "1"
 MOCK_TEXT = "Mock LLM response (LLM_MOCK=1). See [mock.md#0]."
@@ -16,6 +19,7 @@ def _complete(model: str, messages: list[dict], kw: dict):
     """Call litellm, dropping an unsupported `temperature` and retrying once.
     Some Claude models (e.g. claude-sonnet-5) only accept temperature=1 and raise
     litellm.UnsupportedParamsError for our default of 0."""
+    kw.setdefault("num_retries", 3)  # litellm backs off on RateLimitError/5xx/timeouts
     try:
         return litellm.completion(model=model, messages=messages, **kw)
     except litellm.exceptions.UnsupportedParamsError as e:
@@ -26,16 +30,31 @@ def _complete(model: str, messages: list[dict], kw: dict):
 
 
 def chat(messages: list[dict], model: str | None = None, **kw) -> str:
-    """Single LLM entry point. Primary = hosted (Anthropic); falls back to local Ollama."""
+    """Single LLM entry point. Primary = hosted (Anthropic/OpenRouter); falls back to
+    local Ollama."""
     if MOCK:
         return MOCK_TEXT
     model = model or settings.llm_model
     kw.setdefault("temperature", 0)
+    # A reasonable ceiling, not "however much the model allows": some providers (found via
+    # OpenRouter) preflight-check cost against max_tokens before the call even runs, and
+    # reject it if the account can't cover the model's full window even though actual usage
+    # would be far smaller. Our answers are prose paragraphs, not long documents.
+    kw.setdefault("max_tokens", 1024)
     try:
         r = _complete(model, messages, kw)
-    except Exception:
+    except Exception as primary_err:
         if model == settings.llm_fallback_model:
             raise
-        r = _complete(settings.llm_fallback_model, messages,
-                      {**kw, "api_base": settings.ollama_base_url})
+        log.warning("primary LLM call failed (model=%s), falling back to %s: %s",
+                    model, settings.llm_fallback_model, primary_err)
+        try:
+            r = _complete(settings.llm_fallback_model, messages,
+                          {**kw, "api_base": settings.ollama_base_url})
+        except Exception as fallback_err:
+            # Re-raise the PRIMARY error: it's almost always the one that actually
+            # needs fixing (bad model string, missing key, provider outage). The
+            # fallback failing too (e.g. no local Ollama running) is expected in most
+            # deployments and would otherwise mask the real problem.
+            raise primary_err from fallback_err
     return r.choices[0].message.content

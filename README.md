@@ -53,11 +53,23 @@ via a one-shot `migrate` service before `api` starts; re-run by hand any time wi
   (20x concurrency smoke, latency percentiles), and `scripts/check_langfuse.py` (confirms
   traces actually arrived). Set `LLM_MOCK=1` locally for a fast loop that skips the LLM
   entirely; CI does not use it.
+- `live-ollama`: runs on every push, no API key or account needed at all -- pulls a small
+  model (`qwen2.5:1.5b-instruct`) into the local Ollama service and runs
+  `scripts/e2e_smoke.py` against it. GitHub Actions minutes are unlimited for public repos,
+  so this costs nothing. A model this small is far weaker than Claude, so it only proves the
+  real LiteLLM/RAG/agent code path works end to end with a genuine model, not that answers
+  are good; guardrails run on rules only here (`GUARD_LLM=0`) since a model this size isn't
+  reliable at the classifier's strict JSON output.
 - `live`: runs when either the `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` repository secret
   is set (Anthropic preferred if both are). Guardrail eval with the real LLM classifier, the
   same smoke and UI tests against the real model, the generation eval on a 30-question
   sample, and a concurrency smoke test. The floors (pass 0.7, faithfulness 0.8, guardrail
-  accuracy 0.9) are untuned guesses: adjust them after your first run.
+  accuracy 0.9) are untuned guesses: adjust them after your first run. OpenRouter enforces
+  its own per-account limits independent of anything in this repo: new/unfunded accounts get
+  a 20 requests/minute cap per model and a small concurrent ("in-flight") request budget --
+  with zero credits, expect this job to fail intermittently under its call volume regardless
+  of retries. `live-ollama` above is the free alternative for a genuine (if much weaker)
+  end-to-end model check.
 
 ## Evals
 ```bash

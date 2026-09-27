@@ -47,9 +47,17 @@ with sync_playwright() as p:
         html = page.content()
         print("html length:", len(html))
         print("html head:", html[:800].replace("\n", " "))
-        print(f"console/network events ({len(diag)}):")
-        for line in diag[-60:]:
-            print(" ", line)
+        # Dedupe: a single repeated warning (browser console spam, a noisy retried
+        # request) can otherwise fill the entire output and push the one thing that
+        # actually matters -- the page text tail below -- out of any reasonable
+        # tail-slice a CI log viewer applies.
+        counts: dict[str, int] = {}
+        for line in diag:
+            counts[line] = counts.get(line, 0) + 1
+        unique = list(counts.items())
+        print(f"console/network events ({len(diag)} total, {len(unique)} unique):")
+        for line, n in unique[-30:]:
+            print(f"  x{n}" if n > 1 else "  ", line)
         print("--- page text (tail) ---")
         try:
             print(page.inner_text("body")[-2500:])
