@@ -7,10 +7,13 @@ Run:  python scripts/load_test.py [--concurrency 20] [--total 100] [--url http:/
 """
 import argparse
 import asyncio
+import os
 import sys
 import time
 
 import httpx
+
+API_KEY = os.getenv("API_KEY", "")
 
 QUESTIONS = [
     "What is the ping-pong handover threshold?",
@@ -24,8 +27,9 @@ QUESTIONS = [
 async def one_request(client: httpx.AsyncClient, url: str, i: int) -> tuple[float, int]:
     t0 = time.perf_counter()
     try:
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
         r = await client.post(f"{url}/ask", json={"question": QUESTIONS[i % len(QUESTIONS)]},
-                              timeout=60)
+                              headers=headers, timeout=60)
         return time.perf_counter() - t0, r.status_code
     except httpx.HTTPError:
         return time.perf_counter() - t0, 0

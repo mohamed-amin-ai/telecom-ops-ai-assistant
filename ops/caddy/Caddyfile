@@ -1,0 +1,37 @@
+# Reverse proxy + automatic TLS (Let's Encrypt via ACME, or internal certs for LAN use).
+# {$DOMAIN} and {$ACME_EMAIL} are read from the environment; TLS_INTERNAL=1 switches to a
+# self-signed internal CA for private/LAN deployments with no public DNS.
+{$DOMAIN:localhost} {
+  encode gzip
+
+  @metrics path /metrics
+  respond @metrics 404  # never expose metrics on the public listener; see the :9090 site below
+
+  reverse_proxy /api/* api:8000 {
+    header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
+  }
+  reverse_proxy /* ui:8080 {
+    header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+  }
+
+  log {
+    output stdout
+    format json
+  }
+}
+
+# Metrics stay on a separate, internal-only listener (never proxied on the public host/port
+# above), scraped by Prometheus over the compose network only.
+:9090 {
+  handle /metrics {
+    reverse_proxy api:8000
+  }
+  respond 404
+}

@@ -13,6 +13,13 @@ def get_pool() -> ConnectionPool:
     return ConnectionPool(
         settings.database_url,
         min_size=1,
-        max_size=10,
+        max_size=settings.db_pool_max,
+        timeout=10,  # fail a request fast instead of queueing forever if the pool is exhausted
         kwargs={"autocommit": True},
     )
+
+
+def close_pool() -> None:
+    if get_pool.cache_info().currsize:
+        get_pool().close()
+        get_pool.cache_clear()

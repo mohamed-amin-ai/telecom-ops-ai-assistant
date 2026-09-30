@@ -1,0 +1,49 @@
+groups:
+  - name: telecom-ops-assistant
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Over 5% of requests are failing (5xx)"
+          description: "{{ $value | humanizePercentage }} of requests over 5 minutes."
+
+      - alert: HighLatencyP95
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route)) > 20
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "p95 latency on {{ $labels.route }} is above 20s"
+
+      - alert: LLMErrorRateHigh
+        expr: |
+          sum(rate(llm_calls_total{outcome="error"}[10m]))
+          / sum(rate(llm_calls_total[10m])) > 0.2
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "Over 20% of LLM calls are erroring (provider outage, rate limits, or bad config)"
+
+      - alert: AuthFailureSpike
+        expr: sum(rate(auth_failures_total[5m])) > 1
+        for: 5m
+        labels: {severity: warn}
+        annotations:
+          summary: "Sustained authentication failures -- possible credential stuffing or a misconfigured client"
+
+      - alert: NoTicketsCreatedRecently
+        expr: sum(increase(tickets_created_total[24h])) == 0
+        for: 1h
+        labels: {severity: info}
+        annotations:
+          summary: "No tickets created in 24h -- confirm the pipeline is actually receiving alerts, not just quiet"
+
+      - alert: APIDown
+        expr: up{job="api"} == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "The API is not responding to scrapes"

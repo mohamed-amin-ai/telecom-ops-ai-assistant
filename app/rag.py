@@ -1,3 +1,4 @@
+import logging
 import uuid
 from functools import lru_cache
 from pathlib import Path
@@ -8,8 +9,11 @@ from qdrant_client import QdrantClient, models
 
 from .chunking import chunk_markdown, chunk_text
 from .config import settings
+from .guard_rules import scan_document
 from .guardrails import check_input, check_output
 from .llm import chat
+
+log = logging.getLogger("rag")
 
 SYSTEM = (
     "You are a telecom network operations assistant. Answer only from the provided "
@@ -69,6 +73,10 @@ def ingest(docs_dir: str = "data/docs", recreate: bool = False) -> int:
             continue
         chunker = chunk_text if p.suffix.lower() == ".txt" else chunk_markdown
         for i, ch in enumerate(chunker(read_file(p))):
+            flag = scan_document(ch)
+            if flag:  # a runbook chunk that tries to instruct the model: never index it
+                log.warning("quarantined chunk %s#%d at ingest: %s", p.name, i, flag)
+                continue
             texts.append(ch)
             payloads.append({"source": p.name, "chunk": i, "text": ch})
             ids.append(str(uuid.uuid5(uuid.NAMESPACE_URL, f"{p.name}:{i}")))  # idempotent

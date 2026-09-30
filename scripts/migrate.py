@@ -4,11 +4,13 @@ execution (e.g. two replicas starting at once) via an advisory lock.
 
 Run:  python -m scripts.migrate
 """
+import os
 import pathlib
 
 import psycopg
 from langgraph.checkpoint.postgres import PostgresSaver
 
+from app.auth import ROLE_RANK, hash_key
 from app.config import settings
 
 MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parent.parent / "db" / "migrations"
@@ -21,6 +23,20 @@ def applied(conn: psycopg.Connection) -> set[str]:
         "(filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
     )
     return {r[0] for r in conn.execute("SELECT filename FROM schema_migrations").fetchall()}
+
+
+def bootstrap_keys(conn: psycopg.Connection) -> None:
+    """Seed API keys from BOOTSTRAP_API_KEYS="name:role:key,name:role:key". Meant for first
+    boot and CI; afterwards manage keys with scripts.create_api_key. Idempotent."""
+    raw = os.getenv("BOOTSTRAP_API_KEYS", "").strip()
+    for item in filter(None, (x.strip() for x in raw.split(","))):
+        name, role, key = item.split(":", 2)
+        if role not in ROLE_RANK:
+            raise SystemExit(f"bootstrap key {name!r}: unknown role {role!r}")
+        conn.execute(
+            "INSERT INTO api_keys (name, role, key_hash) VALUES (%s, %s, %s) "
+            "ON CONFLICT (key_hash) DO NOTHING", (name, role, hash_key(key)))
+        print(f"bootstrap key ensured: {name} ({role})")
 
 
 def main() -> None:
@@ -48,6 +64,9 @@ def main() -> None:
         finally:
             conn.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
             conn.commit()
+
+    with psycopg.connect(settings.database_url, autocommit=True) as conn:
+        bootstrap_keys(conn)
 
     print("setting up LangGraph checkpoint tables")
     with PostgresSaver.from_conn_string(settings.database_url) as saver:

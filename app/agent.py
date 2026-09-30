@@ -19,6 +19,7 @@ class State(TypedDict, total=False):
     runbook: list
     diagnosis: str
     approved: bool
+    approved_by: str
     ticket: dict
     report: str
 
@@ -50,7 +51,9 @@ def diagnose_node(s: State) -> dict:
 
 def approval_node(s: State) -> dict:
     decision = interrupt({"diagnosis": s["diagnosis"], "question": "Create ticket?"})
-    return {"approved": bool(decision)}
+    if isinstance(decision, dict):
+        return {"approved": bool(decision.get("approve")), "approved_by": decision.get("by", "")}
+    return {"approved": bool(decision), "approved_by": ""}
 
 
 def route(s: State) -> str:
@@ -59,7 +62,8 @@ def route(s: State) -> str:
 
 def ticket_node(s: State, config: RunnableConfig) -> dict:
     thread_id = config["configurable"]["thread_id"]
-    return {"ticket": tools.create_ticket(thread_id, s["alert"], s["diagnosis"])}
+    return {"ticket": tools.create_ticket(
+        thread_id, s["alert"], s["diagnosis"], s.get("approved_by") or None)}
 
 
 def report_node(s: State) -> dict:

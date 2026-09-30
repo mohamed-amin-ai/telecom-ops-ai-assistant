@@ -1,35 +1,87 @@
-import hmac
+import logging
+import re
+import time
 import uuid
+from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+import psycopg
+import redis as redis_lib
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from . import audit, metrics
 from .agent import graph
+from .auth import Principal, client_ip, require
 from .config import settings
+from .db import close_pool, get_pool
 from .guardrails import check_input
+from .observability import request_id_var, setup_logging, setup_sentry
 from .rag import answer
 from .ratelimit import allow
 
-app = FastAPI(title="Telecom Ops Assistant")
+setup_logging()
+setup_sentry()
+log = logging.getLogger("api")
+OPERATOR = Depends(require("operator"))
+APPROVER = Depends(require("approver"))
+ADMIN = Depends(require("admin"))
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    close_pool()  # release DB connections cleanly on SIGTERM instead of dropping them
+
+
+app = FastAPI(title="Telecom Ops Assistant", root_path=settings.root_path, lifespan=lifespan)
+
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+        allow_methods=["GET", "POST"],
+        allow_headers=["X-API-Key", "Content-Type", "X-Request-ID"],
+    )
 
 
 @app.middleware("http")
-async def rate_limit(request: Request, call_next):
-    """Per-client sliding window on the LLM-backed routes (Redis-backed; see ratelimit.py)."""
-    limit = settings.rate_limit_per_min
-    if limit > 0 and request.url.path.startswith(("/ask", "/incident")):
-        ip = request.client.host if request.client else "unknown"
-        if not allow(ip, limit):
-            return JSONResponse({"detail": "rate limit exceeded"}, status_code=429)
-    return await call_next(request)
-
-
-def auth(x_api_key: str | None = Header(default=None)) -> None:
-    """Optional shared-secret auth: enabled when API_KEY is set."""
-    if settings.api_key and not hmac.compare_digest(x_api_key or "", settings.api_key):
-        raise HTTPException(status_code=401, detail="invalid API key")
+async def observe(request: Request, call_next):
+    """Request id, coarse per-IP limit, metrics and one structured log line per request."""
+    rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+    token = request_id_var.set(rid)
+    start = time.perf_counter()
+    ip = client_ip(request)
+    try:
+        limited = request.url.path.startswith(("/ask", "/incident"))
+        if limited and settings.ip_rate_limit_per_min > 0 and not allow(
+            f"ip:{ip}", settings.ip_rate_limit_per_min
+        ):
+            metrics.RATE_LIMITED.labels("ip").inc()
+            response = JSONResponse({"detail": "rate limit exceeded"}, status_code=429)
+        else:
+            response = await call_next(request)
+    except Exception as e:  # last-resort handler: log, report, return JSON
+        log.exception("unhandled error")
+        if settings.sentry_dsn:
+            import sentry_sdk
+            sentry_sdk.capture_exception(e)
+        response = JSONResponse({"detail": "internal error", "request_id": rid}, status_code=500)
+    elapsed = time.perf_counter() - start
+    route = getattr(request.scope.get("route"), "path", "unmatched")
+    metrics.HTTP_REQUESTS.labels(request.method, route, str(response.status_code)).inc()
+    metrics.HTTP_LATENCY.labels(route).observe(elapsed)
+    response.headers["X-Request-ID"] = rid
+    p = getattr(request.state, "principal", None)
+    log.info("request", extra={"fields": {
+        "method": request.method, "path": request.url.path, "status": response.status_code,
+        "ms": round(elapsed * 1000, 1), "ip": ip, "user": p.name if p else None,
+    }})
+    request_id_var.reset(token)
+    return response
 
 
 class Ask(BaseModel):
@@ -62,13 +114,41 @@ def health():
     return {"ok": True}
 
 
-@app.post("/ask", dependencies=[Depends(auth)])
-def ask(b: Ask):
+@app.get("/ready")
+def ready():
+    """Readiness for load balancers: the database is required; Redis only degrades rate limiting."""
+    try:
+        with get_pool().connection() as conn:
+            conn.execute("SELECT 1")
+    except psycopg.Error as e:
+        raise HTTPException(status_code=503, detail="database unavailable") from e
+    redis_ok = True
+    if settings.redis_url:
+        try:
+            redis_lib.Redis.from_url(settings.redis_url, socket_timeout=0.5).ping()
+        except redis_lib.RedisError:
+            redis_ok = False
+    return {"ok": True, "redis": redis_ok}
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics():
+    body, ctype = metrics.render()
+    return Response(body, media_type=ctype)
+
+
+@app.get("/whoami")
+def whoami(p: Principal = OPERATOR):
+    return {"name": p.name, "role": p.role}
+
+
+@app.post("/ask")
+def ask(b: Ask, p: Principal = OPERATOR):
     return answer(b.question)
 
 
-@app.post("/incident", dependencies=[Depends(auth)])
-def open_incident(a: Alert):
+@app.post("/incident")
+def open_incident(a: Alert, p: Principal = OPERATOR):
     alert = a.model_dump()
     if settings.guardrails_enabled and a.description:
         v = check_input(a.description, kind="alert")
@@ -76,11 +156,41 @@ def open_incident(a: Alert):
             raise HTTPException(status_code=400, detail=f"alert description rejected: {v.label}")
         alert["description"] = v.text
     tid = str(uuid.uuid4())
+    audit.record(p.name, "incident_opened", tid, cell_id=a.cell_id, kpi=a.kpi)
     out = graph.invoke({"alert": alert}, {"configurable": {"thread_id": tid}})
     return _shape(tid, out)
 
 
-@app.post("/incident/{tid}/decision", dependencies=[Depends(auth)])
-def decide(tid: str, d: Decision):
-    out = graph.invoke(Command(resume=d.approve), {"configurable": {"thread_id": tid}})
-    return _shape(tid, out)
+@app.post("/incident/{tid}/decision")
+def decide(tid: str, d: Decision, p: Principal = APPROVER):
+    if not UUID_RE.match(tid):
+        raise HTTPException(status_code=404, detail="unknown incident")
+    cfg = {"configurable": {"thread_id": tid}}
+    snap = graph.get_state(cfg)
+    if not snap.values:
+        raise HTTPException(status_code=404, detail="unknown incident")
+    if not snap.next:
+        raise HTTPException(status_code=409, detail="incident already decided")
+    # One decision at a time per incident: a second concurrent approver gets 409 instead of
+    # racing the first into creating a duplicate ticket.
+    with get_pool().connection() as lock_conn:
+        got = lock_conn.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (tid,)).fetchone()[0]
+        if not got:
+            raise HTTPException(status_code=409, detail="a decision is already in progress")
+        try:
+            if not graph.get_state(cfg).next:
+                raise HTTPException(status_code=409, detail="incident already decided")
+            audit.record(p.name, "decision", tid, approve=d.approve)  # fail-closed
+            out = graph.invoke(Command(resume={"approve": d.approve, "by": p.name}), cfg)
+            metrics.APPROVALS.labels("approved" if d.approve else "rejected").inc()
+            if out.get("ticket"):
+                audit.record(p.name, "ticket_created", tid, ticket_id=out["ticket"]["id"])
+            return _shape(tid, out)
+        finally:
+            lock_conn.execute("SELECT pg_advisory_unlock(hashtext(%s))", (tid,))
+
+
+@app.get("/audit")
+def audit_trail(thread_id: str | None = None, limit: int = 100,
+                p: Principal = ADMIN):
+    return {"entries": audit.recent(thread_id, limit)}

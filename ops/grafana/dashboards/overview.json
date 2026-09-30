@@ -1,0 +1,21 @@
+{
+  "title": "Telecom Ops Assistant",
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "panels": [
+    {"title": "Requests/sec by status", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+     "targets": [{"expr": "sum(rate(http_requests_total[1m])) by (status)"}]},
+    {"title": "p95 latency by route", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+     "targets": [{"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))"}]},
+    {"title": "LLM call outcomes", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+     "targets": [{"expr": "sum(rate(llm_calls_total[5m])) by (outcome, model)"}]},
+    {"title": "Guardrail blocks by label", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+     "targets": [{"expr": "sum(rate(guardrail_blocks_total[5m])) by (label)"}]},
+    {"title": "Tickets created", "type": "stat", "gridPos": {"h": 6, "w": 8, "x": 0, "y": 16},
+     "targets": [{"expr": "sum(increase(tickets_created_total[24h]))"}]},
+    {"title": "Approvals (approved vs rejected)", "type": "piechart", "gridPos": {"h": 6, "w": 8, "x": 8, "y": 16},
+     "targets": [{"expr": "sum(increase(approvals_total[7d])) by (decision)"}]},
+    {"title": "Auth failures", "type": "timeseries", "gridPos": {"h": 6, "w": 8, "x": 16, "y": 16},
+     "targets": [{"expr": "sum(rate(auth_failures_total[5m])) by (reason)"}]}
+  ]
+}

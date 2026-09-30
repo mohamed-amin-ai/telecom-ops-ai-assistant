@@ -24,14 +24,31 @@ class Settings:
     database_url: str = os.getenv(
         "DATABASE_URL", "postgresql://telecom:telecom@localhost:5432/telecom"
     )
+    db_pool_max: int = int(os.getenv("DB_POOL_MAX", "10"))
     judge_model: str = os.getenv("JUDGE_MODEL", "anthropic/claude-haiku-4-5-20251001")
 
     guardrails_enabled: bool = _flag("GUARDRAILS", True)
     guard_llm: bool = _flag("GUARD_LLM", True)
     guard_model: str = os.getenv("GUARD_MODEL", "anthropic/claude-haiku-4-5-20251001")
-    rate_limit_per_min: int = int(os.getenv("RATE_LIMIT_PER_MIN", "30"))
-    api_key: str = os.getenv("API_KEY", "")
+
+    # Auth and limits. AUTH_REQUIRED=0 is for local hacking only: every caller becomes admin.
+    auth_required: bool = _flag("AUTH_REQUIRED", True)
+    rate_limit_per_min: int = int(os.getenv("RATE_LIMIT_PER_MIN", "30"))  # per user
+    ip_rate_limit_per_min: int = int(os.getenv("IP_RATE_LIMIT_PER_MIN", "120"))  # per client IP
+    # Number of reverse proxies in front of the API that append to X-Forwarded-For. 0 means
+    # trust nothing: use the socket peer address (correct when the API is exposed directly).
+    trusted_proxies: int = int(os.getenv("TRUSTED_PROXIES", "0"))
+    cors_origins: str = os.getenv("CORS_ORIGINS", "")  # comma-separated; empty = no CORS
+    root_path: str = os.getenv("ROOT_PATH", "")  # e.g. /api when served under a path prefix
     redis_url: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+    log_json: bool = _flag("LOG_JSON", True)
+    sentry_dsn: str = os.getenv("SENTRY_DSN", "")
+    sentry_traces_sample_rate: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
+
+    # Optional ITSM hand-off: POST every approved ticket here (HMAC-signed if a secret is set).
+    ticket_webhook_url: str = os.getenv("TICKET_WEBHOOK_URL", "")
+    ticket_webhook_secret: str = os.getenv("TICKET_WEBHOOK_SECRET", "")
 
 
 settings = Settings()

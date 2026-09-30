@@ -8,6 +8,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from . import metrics
 from .config import settings
 from .guard_rules import REFUSALS, has_grounding, redact, rule_check
 from .llm import chat
@@ -64,6 +65,7 @@ def check_input(text: str, kind: str = "question") -> Verdict:
         label = None if cls == "on_topic" else cls
     if label:
         log.info("input blocked kind=%s label=%s", kind, label)
+        metrics.GUARD_BLOCKS.labels(label).inc()
         return Verdict(False, redacted, label, found)
     if found:
         log.info("input redacted kind=%s types=%s", kind, found)

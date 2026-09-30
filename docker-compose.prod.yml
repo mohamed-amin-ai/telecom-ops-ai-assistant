@@ -1,0 +1,67 @@
+# Production overlay: Caddy terminates TLS and is the only service reachable from outside the
+# Docker network; everything else (including /metrics) stays internal. Multiple API workers,
+# restart policies, resource limits, and Prometheus + Grafana for alerting/dashboards.
+#   cp .env.example .env   # fill in every value docker-compose.yml marks required
+#   DOMAIN=ops.example.com ACME_EMAIL=you@example.com docker compose \
+#     -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Grafana is published directly on :3001 for simplicity -- put it behind your own VPN, SSO
+# proxy, or a Caddy route (this repo doesn't wire one; see README) before exposing it further.
+services:
+  api:
+    environment:
+      API_WORKERS: ${API_WORKERS:-4}
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: 2g}
+        reservations: {cpus: "0.5", memory: 512m}
+
+  ui:
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 512m}
+
+  qdrant:
+    deploy:
+      resources:
+        limits: {memory: 2g}
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [api, ui]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN (or 'localhost' for a self-signed cert) in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    depends_on: [prometheus]
+    ports: ["3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+  grafana_data:

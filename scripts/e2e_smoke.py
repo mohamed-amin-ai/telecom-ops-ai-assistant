@@ -1,6 +1,8 @@
 """End-to-end smoke test against a running compose stack (stdlib only).
 Assertions are LLM-agnostic, so it runs with LLM_MOCK=1 or a real model.
-Env: API_URL, UI_URL, LANGFUSE_URL (optional), API_KEY (optional)."""
+Env: API_URL, UI_URL, LANGFUSE_URL (optional), API_KEY (approver role, used for most
+calls), OPERATOR_KEY (operator role, to prove it cannot approve), ADMIN_KEY (admin role,
+to read the audit trail). All optional -- if unset, AUTH_REQUIRED=0 is assumed."""
 import json
 import os
 import sys
@@ -11,14 +13,16 @@ API = os.getenv("API_URL", "http://localhost:8000")
 UI = os.getenv("UI_URL", "http://localhost:8080")
 LANGFUSE = os.getenv("LANGFUSE_URL", "")
 KEY = os.getenv("API_KEY", "")
+OPERATOR_KEY = os.getenv("OPERATOR_KEY", "")
+ADMIN_KEY = os.getenv("ADMIN_KEY", "")
 failures: list[str] = []
 
 
-def call(method: str, url: str, body: dict | None = None, timeout: int = 180):
+def call(method: str, url: str, body: dict | None = None, timeout: int = 180, key: str = ""):
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
-    if KEY:
-        headers["X-API-Key"] = KEY
+    if key or KEY:
+        headers["X-API-Key"] = key or KEY
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -30,6 +34,8 @@ def call(method: str, url: str, body: dict | None = None, timeout: int = 180):
             return e.code, json.loads(raw)
         except json.JSONDecodeError:
             return e.code, raw
+    except urllib.error.URLError as e:
+        return 0, str(e.reason)
 
 
 def check(name: str, ok: bool, detail=""):
@@ -44,6 +50,15 @@ def incident(cell: str, kpi: str, desc: str = ""):
 
 s, r = call("GET", f"{API}/health")
 check("api health", s == 200 and r == {"ok": True}, (s, r))
+
+s, r = call("GET", f"{API}/ready")
+check("api ready (db reachable)", s == 200 and r.get("ok") is True, (s, r))
+
+if KEY:
+    s, _ = call("POST", f"{API}/ask", {"question": "no key at all here please"}, key="___none___")
+    check("missing/garbage key rejected (401)", s == 401, s)
+    s, r = call("GET", f"{API}/whoami")
+    check("whoami identifies the caller", s == 200 and r.get("role") == "approver", (s, r))
 
 s, r = call("POST", f"{API}/ask", {"question": "What is the ping-pong handover threshold and how much can I adjust hysteresis?"})
 srcs = {x["source"] for x in r.get("sources", [])} if s == 200 else set()
@@ -76,9 +91,23 @@ for cell, kpi in [("CELL_001", "prb_utilization_pct"), ("CELL_002", "rrc_setup_s
     ok = s == 200 and r.get("status") == "awaiting_approval" and (r.get("profile") or {}).get("anomalous") is True
     check(f"{cell}/{kpi} flagged anomalous, awaiting approval", ok, (s, r))
     if s == 200 and cell == "CELL_001":
+        if OPERATOR_KEY:
+            s0, r0 = call("POST", f"{API}/incident/{r['thread_id']}/decision", {"approve": True},
+                          key=OPERATOR_KEY)
+            check("operator role cannot approve (403)", s0 == 403, (s0, r0))
         s2, r2 = call("POST", f"{API}/incident/{r['thread_id']}/decision", {"approve": True})
         ok = s2 == 200 and r2.get("status") == "done" and str((r2.get("ticket") or {}).get("id", "")).startswith("INC-") and bool(r2.get("report"))
         check("approve -> ticket + report", ok, (s2, r2))
+        s3, r3 = call("POST", f"{API}/incident/{r['thread_id']}/decision", {"approve": True})
+        check("second decision on the same incident rejected (409)", s3 == 409, (s3, r3))
+        if ADMIN_KEY:
+            s4, r4 = call("GET", f"{API}/audit?thread_id={r['thread_id']}", key=ADMIN_KEY)
+            actors = [e["action"] for e in r4.get("entries", [])] if s4 == 200 else []
+            check("audit trail recorded the full incident", s4 == 200 and
+                  {"incident_opened", "decision", "ticket_created"} <= set(actors), (s4, actors))
+        if KEY:
+            s5, r5 = call("GET", f"{API}/audit?thread_id={r['thread_id']}")
+            check("non-admin cannot read the audit trail (403)", s5 == 403, (s5, r5))
     elif s == 200 and cell == "CELL_002":
         s2, r2 = call("POST", f"{API}/incident/{r['thread_id']}/decision", {"approve": False})
         check("reject -> no ticket", s2 == 200 and r2.get("status") == "done" and r2.get("ticket") is None, (s2, r2))
