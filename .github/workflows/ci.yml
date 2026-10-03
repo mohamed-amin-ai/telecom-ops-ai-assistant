@@ -13,32 +13,41 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt pytest ruff
+      # requirements-eval.txt too, so tests that need ragas actually run here instead of skipping
+      - run: pip install -r requirements.txt -r requirements-eval.txt pytest ruff
       - run: ruff check .
       - run: pytest -q
 
-  # Full compose stack: real Qdrant, TimescaleDB, Langfuse, real embeddings, the real agent
-  # graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing, judge
-  # JSON parsing) against a fake Anthropic server. This is not LLM_MOCK: it exercises every
-  # line between our code and the Anthropic wire format, just not real model quality.
+  # Full compose stack: real Qdrant, TimescaleDB, Redis, Langfuse, real embeddings, the real
+  # agent graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing,
+  # judge JSON parsing) against a fake Anthropic server. This is not LLM_MOCK: it exercises
+  # every line between our code and the Anthropic wire format, just not real model quality.
+  # Auth is on (AUTH_REQUIRED=1) with three bootstrapped test users, one per role, so the
+  # whole auth/audit/approval-lock system runs for real here too, not just in unit tests.
   stack:
     runs-on: ubuntu-latest
     needs: test
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
-      - name: Configure env (fake Anthropic + Langfuse)
+      - name: Configure env (fake Anthropic + Langfuse + auth)
         run: |
           cp .env.example .env
           {
             echo "ANTHROPIC_API_KEY=ci-fake-key"
             echo "ANTHROPIC_API_BASE=http://fake-anthropic:8099"
             echo "RATE_LIMIT_PER_MIN=1000"
+            echo "IP_RATE_LIMIT_PER_MIN=1000"
             echo "LANGFUSE_PUBLIC_KEY=pk-lf-ci"
             echo "LANGFUSE_SECRET_KEY=sk-lf-ci"
+            echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"
+            echo "LANGFUSE_SALT=ci-langfuse-salt"
+            echo "CHAINLIT_AUTH_SECRET=ci-chainlit-secret"
+            echo "AUTH_REQUIRED=1"
+            echo "BOOTSTRAP_API_KEYS=ci-approver:approver:ci-approver-key,ci-operator:operator:ci-operator-key,ci-admin:admin:ci-admin-key"
           } >> .env
       - name: Build and start the stack
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build --wait --wait-timeout 420
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.ci.yml up -d --build --wait --wait-timeout 420
       - name: Ingest docs (real embeddings)
         run: docker compose exec -T api python -m scripts.ingest
       - name: Seed KPIs
@@ -49,24 +58,48 @@ jobs:
           python scripts/check_eval.py --min-hit 0.9 --min-mrr 0.85 < retrieval.txt
       - name: Guardrail eval (rules + real LLM classifier call, via fake server)
         run: docker compose exec -T api python -m evals.run_guard_eval
+      - name: Red-team eval (deterministic rule layer; not model-dependent, so run once here)
+        run: |
+          set -o pipefail
+          docker compose exec -T api python -m evals.run_redteam 2>&1 | tee redteam.txt
       - name: MCP server tools
         run: docker compose exec -T api python -c "import asyncio; from app.mcp_server import mcp; print(sorted(t.name for t in asyncio.run(mcp.list_tools())))"
-      - name: End-to-end smoke (real LiteLLM path via fake server)
+      - name: End-to-end smoke (real LiteLLM path via fake server, real auth)
+        env:
+          API_KEY: ci-approver-key
+          OPERATOR_KEY: ci-operator-key
+          ADMIN_KEY: ci-admin-key
         run: |
           set -o pipefail
           python scripts/e2e_smoke.py 2>&1 | tee smoke.txt
-      - name: End-to-end UI (Chainlit, headless browser)
+      - name: End-to-end UI (Chainlit, headless browser, real per-user login)
+        env:
+          UI_USER: ci-approver
+          UI_KEY: ci-approver-key
+          UI_OPERATOR_USER: ci-operator
+          UI_OPERATOR_KEY: ci-operator-key
         run: |
           pip install -q playwright
           playwright install --with-deps chromium
           set -o pipefail
           python scripts/e2e_ui.py 2>&1 | tee ui.txt
-      - name: Concurrency smoke (fake Anthropic, real Postgres/Redis/Qdrant)
+      - name: Concurrency smoke (fake Anthropic, real Postgres/Redis/Qdrant, real auth)
+        env:
+          API_KEY: ci-approver-key
         run: |
           pip install -q httpx
           set -o pipefail
           python scripts/load_test.py --concurrency 20 --total 100 \
             --max-error-rate 0.05 --max-p95-s 20 2>&1 | tee load.txt
+      - name: Backup and restore verification (real pg_dump/pg_restore, same image as prod)
+        run: |
+          set -o pipefail
+          docker compose exec -T -e DATABASE_URL=postgresql://telecom:telecom@localhost:5432/telecom \
+            -e BACKUP_DIR=/tmp/bk timescale sh < scripts/backup.sh | tee backup.txt
+          DUMP=$(docker compose exec -T timescale sh -c 'ls -t /tmp/bk/telecom-*.dump | head -1' | tr -d '\r')
+          docker compose exec -T -e PGPASSWORD=telecom timescale \
+            sh -s -- "$DUMP" "postgresql://telecom:telecom@localhost:5432/telecom" \
+            < scripts/verify_backup.sh 2>&1 | tee restore.txt
       - name: Confirm Langfuse received traces
         env:
           LANGFUSE_URL: http://localhost:3000
@@ -87,25 +120,28 @@ jobs:
               t = t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               print(f"::{level} title={title}::{t}")
           ann("notice", "retrieval eval (real embeddings)", "retrieval.txt")
+          ann("notice", "red-team eval", "redteam.txt")
           ann("notice", "e2e smoke (fake Anthropic)", "smoke.txt")
           ann("notice", "e2e UI (fake Anthropic)", "ui.txt")
           ann("notice", "concurrency smoke (20x, 100 requests)", "load.txt")
+          ann("notice", "backup", "backup.txt")
+          ann("notice", "restore verification", "restore.txt")
           ann("warning", "api container log (tail)", "api.log")
           PY
       - name: Container logs (on failure)
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --no-color --tail 300
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.ci.yml logs --no-color --tail 300
       - name: Tear down
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.ci.yml down -v
 
   # Real local model (Ollama), completely free -- no API key, no account, no credits.
   # GitHub Actions minutes are unlimited for public repos, so this costs nothing and runs
   # on every push. A small CPU model is far weaker than Claude, so this only proves the
   # real LiteLLM/RAG/agent code path works end to end with a genuine model, not that
-  # answers are good -- the stack job's fake-Anthropic path already covers wiring, and
-  # the LLM-judge generation eval isn't meaningful against a model this small, so it's
-  # skipped here (guardrails run on rules only too, for the same reason: GUARD_LLM=0).
+  # answers are good -- the stack job's fake-Anthropic path already covers wiring and auth,
+  # so auth is left off here (AUTH_REQUIRED=0) to keep this job's scope narrow and fast;
+  # guardrails run on rules only too (GUARD_LLM=0), for the same reason.
   live-ollama:
     runs-on: ubuntu-latest
     needs: stack
@@ -114,15 +150,19 @@ jobs:
       - uses: actions/checkout@v5
       - name: Configure env (local Ollama, no key needed)
         run: |
-          grep -v -e '^GUARD_LLM=' -e '^LLM_MODEL=' -e '^RATE_LIMIT_PER_MIN=' .env.example > .env
+          grep -v -e '^GUARD_LLM=' -e '^LLM_MODEL=' -e '^RATE_LIMIT_PER_MIN=' -e '^AUTH_REQUIRED=' .env.example > .env
           {
             echo "LLM_MODEL=ollama_chat/qwen2.5:1.5b-instruct"
             echo "OLLAMA_API_BASE=http://ollama:11434"
             echo "GUARD_LLM=0"
             echo "RATE_LIMIT_PER_MIN=1000"
+            echo "AUTH_REQUIRED=0"
+            echo "CHAINLIT_AUTH_SECRET=ci-chainlit-secret"
+            echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"
+            echo "LANGFUSE_SALT=ci-langfuse-salt"
           } >> .env
       - name: Start the stack (with local Ollama)
-        run: docker compose --profile local up -d --build --wait --wait-timeout 420
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local up -d --build --wait --wait-timeout 420
       - name: Pull the model
         run: docker compose exec -T ollama ollama pull qwen2.5:1.5b-instruct
       - name: Ingest and seed
@@ -153,15 +193,86 @@ jobs:
           PY
       - name: Container logs (on failure)
         if: failure()
-        run: docker compose --profile local logs --no-color --tail 200
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local logs --no-color --tail 200
       - name: Tear down
         if: always()
-        run: docker compose --profile local down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local down -v
+
+  # RAGAS scored by a local Ollama model: no key, no account, no credit. A model small
+  # enough for a free CPU runner is a weak judge (expect noisy scores and some unparseable
+  # rows, reported as nan_rows), so treat the numbers as a trend, not a certification, and
+  # don't compare them with scores from a stronger judge. Runs on pushes to main and manual
+  # dispatch only (it is slow), and uses a handful of questions, one judge request at a time.
+  ragas-ollama:
+    runs-on: ubuntu-latest
+    needs: stack
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure env (local Ollama judge, eval dependencies)
+        run: |
+          grep -v -e '^GUARD_LLM=' -e '^LLM_MODEL=' -e '^RATE_LIMIT_PER_MIN=' -e '^AUTH_REQUIRED=' -e '^TOP_K=' .env.example > .env
+          {
+            echo "INSTALL_EVAL=1"
+            echo "LLM_MODEL=ollama_chat/qwen2.5:3b-instruct"
+            echo "OLLAMA_API_BASE=http://ollama:11434"
+            echo "GUARD_LLM=0"
+            echo "TOP_K=3"
+            echo "RATE_LIMIT_PER_MIN=1000"
+            echo "AUTH_REQUIRED=0"
+            echo "CHAINLIT_AUTH_SECRET=ci-chainlit-secret"
+            echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"
+            echo "LANGFUSE_SALT=ci-langfuse-salt"
+          } >> .env
+      - name: Start the stack (with local Ollama)
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local up -d --build --wait --wait-timeout 600
+      - name: Pull the judge model
+        run: docker compose exec -T ollama ollama pull qwen2.5:3b-instruct
+      - name: Ingest docs
+        run: docker compose exec -T api python -m scripts.ingest
+      - name: RAGAS (faithfulness, answer relevancy, context precision/recall)
+        run: |
+          # stdout is the result JSON only; warnings and per-job errors go to ragas.err and
+          # are summarized below, because RAGAS repeats the same error once per failed job
+          # and that noise buried the actual result in the last run.
+          set +e
+          docker compose exec -T api python -W ignore -m evals.run_ragas --limit 6 --workers 1 --timeout 600 \
+            --min-faithfulness 0.01 --min-answer-relevancy 0.01 \
+            --min-context-precision 0.01 --min-context-recall 0.01 > ragas.txt 2> ragas.err
+          rc=$?
+          set -e
+          grep -o 'Exception raised in Job\[[0-9]*\]: [A-Za-z]*Error([^:]*' ragas.err | sed 's/Job\[[0-9]*\]/Job[n]/' | sort | uniq -c | sort -rn | head -8 > ragas_errors.txt || true
+          cat ragas.txt
+          echo "--- error summary (count, message) ---"; cat ragas_errors.txt
+          { echo '### RAGAS (local qwen2.5:3b judge)'; echo '```'; cat ragas.txt; echo '--- errors ---'; cat ragas_errors.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      - name: Publish results as annotations
+        if: always()
+        run: |
+          docker compose logs --no-color --tail 300 api > api.log 2>&1 || true
+          python3 - <<'PY'
+          import pathlib
+          def ann(level, title, path, limit=6000):
+              p = pathlib.Path(path)
+              if not p.exists():
+                  return
+              t = p.read_text(errors="replace")[-limit:]
+              t = t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::{level} title={title}::{t}")
+          ann("notice", "RAGAS result", "ragas.txt")
+          ann("error", "RAGAS error summary", "ragas_errors.txt")
+          ann("warning", "api container log (tail, ragas)", "api.log", 3000)
+          PY
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local down -v
 
   # Same stack against a real hosted LLM. Runs only when either ANTHROPIC_API_KEY or
   # OPENROUTER_API_KEY exists as a repository secret (Settings > Secrets and variables >
   # Actions). Anthropic is preferred if both are set; OpenRouter is a one-key alternative
   # that proxies many providers/models, useful when you don't have a direct Anthropic key.
+  # Auth is on here too (same three bootstrapped test users as the stack job).
   live:
     runs-on: ubuntu-latest
     needs: stack
@@ -183,12 +294,24 @@ jobs:
           fi
       - uses: actions/checkout@v5
         if: steps.key.outputs.provider != 'none'
+      - name: Configure env (common - auth, chainlit, langfuse, eval build)
+        if: steps.key.outputs.provider != 'none'
+        run: |
+          {
+            echo "INSTALL_EVAL=1"
+            echo "AUTH_REQUIRED=1"
+            echo "BOOTSTRAP_API_KEYS=ci-approver:approver:ci-approver-key,ci-operator:operator:ci-operator-key,ci-admin:admin:ci-admin-key"
+            echo "CHAINLIT_AUTH_SECRET=ci-chainlit-secret"
+            echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"
+            echo "LANGFUSE_SALT=ci-langfuse-salt"
+          } >> ci-common.env
       - name: Configure env (real Anthropic)
         if: steps.key.outputs.provider == 'anthropic'
         run: |
           grep -v -e '^ANTHROPIC_API_KEY=' -e '^RATE_LIMIT_PER_MIN=' .env.example > .env
           echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> .env
           echo "RATE_LIMIT_PER_MIN=1000" >> .env
+          cat ci-common.env >> .env
       - name: Configure env (OpenRouter)
         if: steps.key.outputs.provider == 'openrouter'
         run: |
@@ -207,9 +330,10 @@ jobs:
             echo "GUARD_MODEL=openrouter/anthropic/claude-haiku-4.5"
             echo "RATE_LIMIT_PER_MIN=1000"
           } >> .env
+          cat ci-common.env >> .env
       - name: Start the stack
         if: steps.key.outputs.provider != 'none'
-        run: docker compose up -d --build --wait --wait-timeout 420
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --wait --wait-timeout 420
       - name: Ingest and seed
         if: steps.key.outputs.provider != 'none'
         run: |
@@ -223,11 +347,20 @@ jobs:
             | grep -Ev "LiteLLM\.Info|Give Feedback" | tee guard.txt
       - name: End-to-end smoke (real model)
         if: steps.key.outputs.provider != 'none'
+        env:
+          API_KEY: ci-approver-key
+          OPERATOR_KEY: ci-operator-key
+          ADMIN_KEY: ci-admin-key
         run: |
           set -o pipefail
           python scripts/e2e_smoke.py 2>&1 | tee smoke.txt
       - name: End-to-end UI (real model)
         if: steps.key.outputs.provider != 'none'
+        env:
+          UI_USER: ci-approver
+          UI_KEY: ci-approver-key
+          UI_OPERATOR_USER: ci-operator
+          UI_OPERATOR_KEY: ci-operator-key
         run: |
           pip install -q playwright
           playwright install --with-deps chromium
@@ -240,6 +373,8 @@ jobs:
           { echo '### Generation eval (live)'; echo '```'; cat gen.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Concurrency smoke (real model)
         if: steps.key.outputs.provider != 'none'
+        env:
+          API_KEY: ci-approver-key
         run: |
           pip install -q httpx
           set -o pipefail
@@ -271,4 +406,4 @@ jobs:
         run: docker compose logs --no-color --tail 200
       - name: Tear down
         if: always() && steps.key.outputs.provider != 'none'
-        run: docker compose down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v

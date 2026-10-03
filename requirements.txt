@@ -14,3 +14,5 @@ redis
 mcp
 chainlit==2.12.0   # pin: UI e2e test (scripts/e2e_ui.py) relies on this version's #chat-input id
 # docling   # uncomment for PDF ingestion (large download)
+sentry-sdk
+prometheus-client

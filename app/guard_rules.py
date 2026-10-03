@@ -26,10 +26,13 @@ _LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t
                        "@": "a", "$": "s"})
 
 
-def normalize(text: str) -> str:
+def _clean(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
-    text = "".join(c for c in text if unicodedata.category(c) != "Cf")  # zero-width etc.
-    text = text.translate(_CONFUSABLES)
+    return "".join(c for c in text if unicodedata.category(c) != "Cf")  # zero-width etc.
+
+
+def normalize(text: str) -> str:
+    text = _clean(text).translate(_CONFUSABLES)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -50,7 +53,11 @@ def _b64_segments(text: str) -> list[str]:
 def variants(text: str) -> tuple[list[str], str]:
     """(texts to run the regexes over, letters-only form for the phrase check)."""
     base = normalize(text)
-    forms = [base, base.translate(_LEET), base[::-1], codecs.encode(base, "rot13"),
+    # Confusable mapping turns genuine Cyrillic/Greek text into Latin gibberish, which is
+    # right for catching "ign\u043ere" but makes native-script patterns (Russian, Greek)
+    # unmatchable -- so the script-preserving form is checked as well.
+    native = re.sub(r"\s+", " ", _clean(text)).strip()
+    forms = [base, native, base.translate(_LEET), base[::-1], codecs.encode(base, "rot13"),
              *_b64_segments(base)]
     squashed = re.sub(r"[^a-z]", "", base.translate(_LEET).lower())
     return list(dict.fromkeys(forms)), squashed

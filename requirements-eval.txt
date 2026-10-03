@@ -1,0 +1,4 @@
+# Only installed when building with INSTALL_EVAL=1 (CI, or a dev box running the evals).
+ragas>=0.4,<0.5
+langchain-community<0.4
+langchain-litellm
