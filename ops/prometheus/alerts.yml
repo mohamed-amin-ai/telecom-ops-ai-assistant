@@ -47,3 +47,56 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "The API is not responding to scrapes"
+
+      - alert: DatabaseUnreachable
+        expr: db_up == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "The API cannot reach Postgres (auth, tickets, audit and checkpoints all depend on it)"
+
+      - alert: KPIDataStale
+        expr: kpi_data_age_seconds > 3600
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "The newest KPI reading is over an hour old -- the data feed has likely stopped"
+          description: "Diagnoses are being made from stale numbers. Newest reading is {{ $value | humanizeDuration }} old."
+
+      - alert: UnverifiedAnswerRateHigh
+        expr: |
+          (
+            sum(increase(answers_total{outcome="unverified"}[1h]))
+            / sum(increase(answers_total{outcome=~"cited|abstained|unverified"}[1h])) > 0.3
+          )
+          and sum(increase(answers_total{outcome=~"cited|abstained|unverified"}[1h])) >= 20
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "Over 30% of answers carry neither a runbook citation nor an abstention"
+          description: "Possible retrieval or prompt regression, or a model change: answers are going out ungrounded. Needs at least 20 answers in the hour to fire."
+
+      - alert: RetrievalEmptyRateHigh
+        expr: |
+          (
+            sum(increase(retrieval_empty_total[1h]))
+            / sum(increase(answers_total{outcome=~"cited|abstained|unverified"}[1h])) > 0.2
+          )
+          and sum(increase(answers_total{outcome=~"cited|abstained|unverified"}[1h])) >= 20
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "Over 20% of questions retrieve nothing -- the vector index may be empty or unreachable"
+
+      - alert: ApprovalBacklog
+        expr: histogram_quantile(0.95, sum(rate(approval_wait_seconds_bucket[6h])) by (le)) > 3600
+        for: 30m
+        labels: {severity: warn}
+        annotations:
+          summary: "p95 time from incident opened to decision is over an hour"
+
+      - alert: TicketWebhookFailing
+        expr: increase(ticket_webhook_total{status="failed"}[15m]) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "Approved tickets are failing to reach the ITSM system (they exist in Postgres; webhook_status records why)"

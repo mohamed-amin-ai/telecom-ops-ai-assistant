@@ -7,9 +7,10 @@ from fastembed import SparseTextEmbedding, TextEmbedding
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 from qdrant_client import QdrantClient, models
 
+from . import metrics
 from .chunking import chunk_markdown, chunk_text
 from .config import settings
-from .guard_rules import scan_document
+from .guard_rules import answer_outcome, scan_document
 from .guardrails import check_input, check_output
 from .llm import chat
 
@@ -146,10 +147,13 @@ def answer(question: str) -> dict:
     if guard:
         v = check_input(question)
         if not v.allowed:
+            metrics.ANSWERS.labels("blocked").inc()
             return {"answer": v.refusal, "sources": [], "contexts": [], "blocked": True,
                     "guardrail": {"label": v.label}}
         question = v.text
     hits = retrieve(question)
+    if not hits:
+        metrics.RETRIEVAL_EMPTY.inc()
     ctx = "\n\n".join(f"[{h['source']}#{h['chunk']}]\n{h['text']}" for h in hits)
     text = chat([
         {"role": "system", "content": SYSTEM},
@@ -158,6 +162,7 @@ def answer(question: str) -> dict:
     info = {}
     if guard:
         text, info = check_output(text)
+    metrics.ANSWERS.labels(answer_outcome(text)).inc()
     return {"answer": text,
             "sources": [{"source": h["source"], "chunk": h["chunk"]} for h in hits],
             "contexts": [h["text"] for h in hits],

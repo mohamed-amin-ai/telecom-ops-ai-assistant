@@ -12,7 +12,7 @@ import random
 import psycopg
 
 url = os.getenv("DATABASE_URL", "postgresql://telecom:telecom@localhost:5432/telecom")
-now = dt.datetime.now(dt.timezone.utc)
+now = dt.datetime.now(dt.UTC)
 steps = 72 * 4
 faulty_from = steps - 16
 FAULTS = {

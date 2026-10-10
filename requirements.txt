@@ -1,8 +1,9 @@
 fastapi
 uvicorn[standard]
 pydantic>=2
-litellm
-langfuse<3
+# litellm 1.104 made its 'langfuse' callback require langfuse>=4.7 and raises from every completion()
+litellm>=1.99,<1.104
+langfuse>=2.60,<3
 langgraph>=0.4
 langgraph-checkpoint-postgres
 qdrant-client>=1.10

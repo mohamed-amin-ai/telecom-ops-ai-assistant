@@ -1,13 +1,13 @@
 import math
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.stats import profile_series
 
 
 def _series(base=55.0, amp=15.0, noise=1.5, delta=0.0, hours=72):
     random.seed(0)
-    end = datetime(2026, 1, 10, 12, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
     steps = hours * 4
     pts = []
     for i in range(steps):

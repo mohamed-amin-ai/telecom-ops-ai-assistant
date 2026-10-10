@@ -209,24 +209,26 @@ docker compose exec api python -m evals.run_ragas --limit 20 --workers 1 --timeo
 ```
 Needs the eval dependencies in the image (`INSTALL_EVAL=1` at build time).
 
-Measured by the `ragas-ollama` job (local `qwen2.5:3b-instruct` as both the app model and
-the judge, 6 golden-set questions, top-3 retrieval, no failed rows):
+Measured by the sharded `ragas-ollama` job (local `qwen2.5:3b-instruct` as both the app
+model and the judge, 24 questions = 12 standard + 12 from the hard set, top-3 retrieval).
+Pooled mean with 95% bootstrap interval; failed = rows RAGAS could not score (counted, not
+dropped silently):
 
-| metric | latest run | earlier run of the same code |
-|---|---|---|
-| faithfulness | 0.883 | 0.778 |
-| answer relevancy | 0.775 | not scored (a bug, since fixed) |
-| context precision | 1.000 | 0.972 |
-| context recall | 1.000 | 1.000 |
+| metric | all (n=24) | standard (n=12) | hard (n=12) | failed rows (all) |
+|---|---|---|---|---|
+| faithfulness | 0.38 [0.25, 0.53] | 0.63 [0.47, 0.79] | **0.14 [0.05, 0.24]** | 0 |
+| answer relevancy | 0.76 [0.65, 0.85] | 0.80 [0.63, 0.91] | 0.73 [0.57, 0.84] | 1 |
+| context precision | 0.81 [0.67, 0.92] | 0.94 [0.85, 1.00] | 0.67 [0.43, 0.88] | 0 |
+| context recall | 0.91 [0.77, 1.00] | 1.00 [1.00, 1.00] | 0.80 [0.50, 1.00] | 2 |
 
-**How much to trust this: not much yet.** Faithfulness moved 0.105 between two runs of
-identical code, which is the noise floor you get from 6 questions and a 3B judge, so
-differences smaller than roughly 0.1 between commits mean nothing. Context precision and
-recall sit at or near 1.0, which mostly reflects the synthetic corpus (see Limits) -- the
-same ceiling effect as the retrieval table. Answer relevancy is the lowest, but one run and
-one judge can't say whether that is the pipeline or the judge. A stronger judge and more
-questions are what would make this a real signal. Two bugs found getting here are in
-"Found and fixed" below.
+**What this says.** The easy questions look fine (the earlier 6-question run, which showed
+faithfulness 0.78-0.88, was too small and too easy to be representative). On the hard set
+the pipeline is weak: faithfulness 0.14 means a 3B model, given the retrieved passages,
+mostly produces claims the judge cannot ground in them. Retrieval is part of it (hard-set
+context precision 0.67), but a 3B generator and a 3B judge are both in the loop, so this
+number can't separate pipeline from model. It is not evidence about Claude-quality
+answers, which has never been measured here. There is no CI gate on these scores yet; the
+point of recording them is a baseline to beat, not a pass mark.
 
 ## Layout
 - `app/rag.py`: ingest (with ingest-time injection scanning) and hybrid retrieval (Qdrant

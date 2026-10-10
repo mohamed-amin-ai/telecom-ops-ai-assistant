@@ -12,6 +12,7 @@ Only answerable questions are used (RAGAS's metrics assume there is a correct an
 compare against; scoring abstentions is what evals/run_gen_eval.py already does).
 """
 import argparse
+import itertools
 import json
 import math
 import sys
@@ -21,14 +22,28 @@ from app.config import settings
 from app.rag import answer
 
 
-def load_rows(path: str, limit: int) -> list[dict]:
-    with open(path, encoding="utf-8") as f:
-        rows = [json.loads(line) for line in f if line.strip()]
-    rows = [r for r in rows if r.get("answerable")]
+def load_rows(paths: str | list[str], limit: int, shard: str = "0/1") -> list[dict]:
+    """Answerable questions from one or more sets, interleaved (so a small sample mixes
+    standard and hard questions) and deterministic. Parallel jobs score disjoint questions:
+    shard "i/n" takes every n-th question of each set, starting at i."""
+    if isinstance(paths, str):
+        paths = [paths]
+    per_set = []
+    for path in paths:
+        split = "hard" if "hard" in path else "standard"
+        with open(path, encoding="utf-8") as f:
+            per_set.append([{**r, "split": r.get("split", split)}
+                            for r in (json.loads(line) for line in f if line.strip())
+                            if r.get("answerable")])
+    # take an evenly spread sample from each set, then interleave
     if limit:
-        step = max(1, len(rows) // limit)
-        rows = rows[::step][:limit]
-    return rows
+        each = max(1, limit // len(per_set))
+        per_set = [rows[:: max(1, len(rows) // each)][:each] for rows in per_set]
+    # shard WITHIN each set (not after interleaving: with an even shard count that would hand
+    # each shard a single set), so every shard gets a mix of standard and hard questions
+    i, n = (int(x) for x in shard.split("/"))
+    per_set = [rows[i::n] for rows in per_set]
+    return [r for group in itertools.zip_longest(*per_set) for r in group if r]
 
 
 def build_dataset(rows: list[dict]):
@@ -99,7 +114,8 @@ def build_llm_and_embeddings(request_timeout: int = 120):
     return llm, embeddings
 
 
-def run(path: str, limit: int, workers: int = 16, timeout: int = 180) -> dict:
+def run(paths, limit: int, workers: int = 16, timeout: int = 180, shard: str = "0/1",
+        out: str | None = None) -> dict:
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="ragas")
     from ragas import evaluate
     from ragas.metrics import (
@@ -110,9 +126,9 @@ def run(path: str, limit: int, workers: int = 16, timeout: int = 180) -> dict:
     )
     from ragas.run_config import RunConfig
 
-    rows = load_rows(path, limit)
+    rows = load_rows(paths, limit, shard)
     if not rows:
-        raise SystemExit(f"no answerable rows found in {path}")
+        raise SystemExit(f"no answerable rows found in {paths} (shard {shard})")
     dataset = build_dataset(rows)
     # A CPU-bound local judge answers one request at a time, so ragas's defaults (16
     # parallel workers, 180s per call) just make calls queue and time out. Callers running a
@@ -127,6 +143,19 @@ def run(path: str, limit: int, workers: int = 16, timeout: int = 180) -> dict:
     result = evaluate(dataset, metrics=metrics, show_progress=False, raise_exceptions=False,
                       run_config=RunConfig(timeout=timeout, max_workers=workers, max_retries=3))
     df = result.to_pandas()
+    metric_names = ["faithfulness", "answer_relevancy",
+                    "llm_context_precision_with_reference", "context_recall"]
+    if out:
+        per_row = []
+        for i, r in enumerate(rows):
+            rec = {"id": r.get("id"), "question": r["question"], "split": r["split"],
+                   "judge": settings.llm_model}
+            for m in metric_names:
+                v = df[m].iloc[i] if m in df.columns else None
+                rec[m] = None if v is None or math.isnan(v) else float(v)
+            per_row.append(rec)
+        with open(out, "w") as f:
+            json.dump(per_row, f)
     metric_cols = ["faithfulness", "answer_relevancy",
                    "llm_context_precision_with_reference", "context_recall"]
     present = [c for c in metric_cols if c in df.columns]
@@ -138,8 +167,10 @@ def run(path: str, limit: int, workers: int = 16, timeout: int = 180) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("path", nargs="?", default="evals/golden_set.jsonl")
-    ap.add_argument("--limit", type=int, default=20)
+    ap.add_argument("paths", nargs="*", default=["evals/golden_set.jsonl", "evals/golden_hard.jsonl"])
+    ap.add_argument("--limit", type=int, default=20, help="total questions across all sets")
+    ap.add_argument("--shard", default="0/1", help="i/n: score every n-th question starting at i")
+    ap.add_argument("--out", help="write per-question scores (JSON) for evals.aggregate_ragas")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--timeout", type=int, default=180)
     ap.add_argument("--min-faithfulness", type=float, default=0.0)
@@ -148,7 +179,7 @@ def main() -> None:
     ap.add_argument("--min-context-recall", type=float, default=0.0)
     a = ap.parse_args()
 
-    result = run(a.path, a.limit, a.workers, a.timeout)
+    result = run(a.paths, a.limit, a.workers, a.timeout, a.shard, a.out)
     result["judge"] = settings.llm_model
     print(json.dumps(result))
 

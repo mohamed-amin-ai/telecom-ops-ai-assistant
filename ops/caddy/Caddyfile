@@ -1,17 +1,35 @@
-# Reverse proxy + automatic TLS (Let's Encrypt via ACME, or internal certs for LAN use).
-# {$DOMAIN} and {$ACME_EMAIL} are read from the environment; TLS_INTERNAL=1 switches to a
-# self-signed internal CA for private/LAN deployments with no public DNS.
+# Reverse proxy + automatic TLS (Let's Encrypt via ACME; with DOMAIN=localhost Caddy issues
+# a certificate from its own internal CA, which is what CI uses).
+#
+# Routes:   /api/*      -> API (the /api prefix is stripped; the API's routes are /ask etc.)
+#           /grafana/*  -> Grafana, behind HTTP basic auth AND Grafana's own login
+#           everything else -> Chainlit UI
+# Caddy replaces any client-supplied X-Forwarded-For with the real peer address, so the
+# API (TRUSTED_PROXIES=1) can rate-limit by true client IP and a client can't spoof it.
+# Generate the basic-auth hash with:  docker run --rm caddy:2-alpine caddy hash-password
 {$DOMAIN:localhost} {
   encode gzip
 
-  @metrics path /metrics
-  respond @metrics 404  # never expose metrics on the public listener; see the :9090 site below
-
-  reverse_proxy /api/* api:8000 {
-    header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
+  # Must be a handle block, and first: bare `respond` runs AFTER handle blocks in Caddy's
+  # directive order, so /metrics would otherwise fall through to the UI or the API.
+  @metrics path /metrics /api/metrics
+  handle @metrics {
+    respond 404  # metrics are only served on the internal :9090 listener below
   }
-  reverse_proxy /* ui:8080 {
-    header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
+
+  handle_path /api/* {
+    reverse_proxy api:8000
+  }
+
+  handle /grafana/* {
+    basic_auth {
+      {$GRAFANA_BASIC_USER:ops} {$GRAFANA_BASIC_HASH}
+    }
+    reverse_proxy grafana:3000
+  }
+
+  handle {
+    reverse_proxy ui:8080
   }
 
   header {
@@ -27,8 +45,8 @@
   }
 }
 
-# Metrics stay on a separate, internal-only listener (never proxied on the public host/port
-# above), scraped by Prometheus over the compose network only.
+# Metrics stay on a separate, internal-only listener (never published to the host), scraped
+# by Prometheus over the compose network only.
 :9090 {
   handle /metrics {
     reverse_proxy api:8000

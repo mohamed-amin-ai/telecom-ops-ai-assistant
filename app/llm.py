@@ -30,7 +30,7 @@ def _timed(model: str, messages: list[dict], kw: dict):
     return r
 
 
-def _complete(model: str, messages: list[dict], kw: dict):
+def _call(model: str, messages: list[dict], kw: dict):
     """Call litellm, dropping an unsupported `temperature` and retrying once.
     Some Claude models (e.g. claude-sonnet-5) only accept temperature=1 and raise
     litellm.UnsupportedParamsError for our default of 0."""
@@ -42,6 +42,19 @@ def _complete(model: str, messages: list[dict], kw: dict):
             kw = {k: v for k, v in kw.items() if k != "temperature"}
             return litellm.completion(model=model, messages=messages, **kw)
         raise
+
+
+def _complete(model: str, messages: list[dict], kw: dict):
+    """Tracing must never break answering. litellm 1.104 raises ImportError from every
+    completion() when the langfuse callback is set and the langfuse SDK is 2.x."""
+    try:
+        return _call(model, messages, kw)
+    except ImportError as e:
+        if not (litellm.success_callback or litellm.failure_callback):
+            raise
+        log.error("tracing callback unusable (%s); disabling tracing for this process", e)
+        litellm.success_callback, litellm.failure_callback = [], []
+        return _call(model, messages, kw)
 
 
 def chat(messages: list[dict], model: str | None = None, **kw) -> str:

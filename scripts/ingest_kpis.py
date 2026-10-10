@@ -11,7 +11,7 @@ import argparse
 import csv
 import math
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.db import get_pool
 
@@ -20,8 +20,8 @@ KPI = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 def parse_ts(raw: str) -> datetime:
-    dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))  # noqa: FURB162
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def rows_from_csv(path: str, wide: bool):

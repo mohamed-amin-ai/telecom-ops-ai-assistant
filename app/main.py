@@ -134,7 +134,7 @@ def ready():
 @app.get("/metrics", include_in_schema=False)
 def prometheus_metrics():
     body, ctype = metrics.render()
-    return Response(body, media_type=ctype)
+    return Response(body + metrics.kpi_freshness_lines(), media_type=ctype)
 
 
 @app.get("/whoami")
@@ -181,6 +181,13 @@ def decide(tid: str, d: Decision, p: Principal = APPROVER):
             if not graph.get_state(cfg).next:
                 raise HTTPException(status_code=409, detail="incident already decided")
             audit.record(p.name, "decision", tid, approve=d.approve)  # fail-closed
+            with get_pool().connection() as wait_conn:
+                opened = wait_conn.execute(
+                    "SELECT EXTRACT(EPOCH FROM (now() - ts)) FROM audit_log "
+                    "WHERE thread_id = %s AND action = 'incident_opened' ORDER BY id LIMIT 1",
+                    (tid,)).fetchone()
+            if opened and opened[0] is not None:
+                metrics.APPROVAL_WAIT.observe(float(opened[0]))
             out = graph.invoke(Command(resume={"approve": d.approve, "by": p.name}), cfg)
             metrics.APPROVALS.labels("approved" if d.approve else "rejected").inc()
             if out.get("ticket"):

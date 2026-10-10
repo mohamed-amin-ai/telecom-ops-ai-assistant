@@ -137,3 +137,27 @@ def test_chat_respects_explicit_max_tokens():
     with patch("app.llm.litellm.completion", side_effect=fake_completion):
         llm.chat([{"role": "user", "content": "hi"}], max_tokens=30)
     assert seen.get("max_tokens") == 30
+
+
+def test_broken_tracing_callback_does_not_break_answering(monkeypatch):
+    calls = {"n": 0}
+
+    def fake(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ImportError("langfuse>=4.7 required")
+        return _Resp("ok")
+
+    monkeypatch.setattr(litellm, "success_callback", ["langfuse"])
+    monkeypatch.setattr(litellm, "failure_callback", ["langfuse"])
+    with patch("litellm.completion", side_effect=fake):
+        r = _complete("m", [{"role": "user", "content": "x"}], {})
+    assert r.choices[0].message.content == "ok"
+    assert litellm.success_callback == [] and litellm.failure_callback == []
+
+
+def test_import_error_without_tracing_is_not_swallowed(monkeypatch):
+    monkeypatch.setattr(litellm, "success_callback", [])
+    monkeypatch.setattr(litellm, "failure_callback", [])
+    with patch("litellm.completion", side_effect=ImportError("boom")), pytest.raises(ImportError):
+        _complete("m", [{"role": "user", "content": "x"}], {})

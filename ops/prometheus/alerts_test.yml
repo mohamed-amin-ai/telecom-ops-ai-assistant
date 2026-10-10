@@ -1,0 +1,146 @@
+# Run:  promtool test rules ops/prometheus/alerts_test.yml
+# Every alert has a case where it must fire and, where it matters, one where it must not.
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+tests:
+  - name: high error rate fires at 20% 5xx
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{route="/ask",status="500"}'
+        values: '0+20x40'
+      - series: 'http_requests_total{route="/ask",status="200"}'
+        values: '0+80x40'
+    alert_rule_test:
+      - {eval_time: 30m, alertname: HighErrorRate, exp_alerts: [{exp_labels: {severity: page}, exp_annotations: {summary: "Over 5% of requests are failing (5xx)", description: "20% of requests over 5 minutes."}}]}
+
+  - name: high error rate stays quiet at 1% 5xx
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{route="/ask",status="500"}'
+        values: '0+1x40'
+      - series: 'http_requests_total{route="/ask",status="200"}'
+        values: '0+99x40'
+    alert_rule_test:
+      - {eval_time: 30m, alertname: HighErrorRate, exp_alerts: []}
+
+  - name: api down
+    interval: 1m
+    input_series:
+      - series: 'up{job="api"}'
+        values: '1 1 1 0 0 0 0 0'
+    alert_rule_test:
+      - {eval_time: 3m, alertname: APIDown, exp_alerts: []}
+      - {eval_time: 7m, alertname: APIDown, exp_alerts: [{exp_labels: {severity: page, job: api}, exp_annotations: {summary: "The API is not responding to scrapes"}}]}
+
+  - name: llm error rate fires when most calls fail
+    interval: 1m
+    input_series:
+      - series: 'llm_calls_total{model="m",outcome="error"}'
+        values: '0+5x30'
+      - series: 'llm_calls_total{model="m",outcome="ok"}'
+        values: '0+5x30'
+    alert_rule_test:
+      - {eval_time: 25m, alertname: LLMErrorRateHigh, exp_alerts: [{exp_labels: {severity: page}, exp_annotations: {summary: "Over 20% of LLM calls are erroring (provider outage, rate limits, or bad config)"}}]}
+
+  - name: database unreachable
+    interval: 1m
+    input_series:
+      - series: 'db_up'
+        values: '1 1 0 0 0 0'
+    alert_rule_test:
+      - {eval_time: 5m, alertname: DatabaseUnreachable, exp_alerts: [{exp_labels: {severity: page}, exp_annotations: {summary: "The API cannot reach Postgres (auth, tickets, audit and checkpoints all depend on it)"}}]}
+
+  - name: kpi data stale fires, fresh data does not
+    interval: 1m
+    input_series:
+      - series: 'kpi_data_age_seconds{instance="a"}'
+        values: '4000+60x30'
+      - series: 'kpi_data_age_seconds{instance="b"}'
+        values: '30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: KPIDataStale
+        exp_alerts:
+          - exp_labels: {severity: page, instance: a}
+            exp_annotations: {summary: "The newest KPI reading is over an hour old -- the data feed has likely stopped", description: "Diagnoses are being made from stale numbers. Newest reading is 1h 21m 40s old."}
+
+  - name: unverified answers fire only with enough volume
+    interval: 1m
+    input_series:
+      - series: 'answers_total{outcome="unverified"}'
+        values: '0+2x90'
+      - series: 'answers_total{outcome="cited"}'
+        values: '0+3x90'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: UnverifiedAnswerRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warn}
+            exp_annotations: {summary: "Over 30% of answers carry neither a runbook citation nor an abstention", description: "Possible retrieval or prompt regression, or a model change: answers are going out ungrounded. Needs at least 20 answers in the hour to fire."}
+
+  - name: unverified answers stay quiet below the volume floor
+    interval: 1m
+    input_series:
+      - series: 'answers_total{outcome="unverified"}'
+        values: '0 0 0 0 0 1 2 3 4 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5'
+    alert_rule_test:
+      - {eval_time: 60m, alertname: UnverifiedAnswerRateHigh, exp_alerts: []}
+
+  - name: well-grounded answers do not alert
+    interval: 1m
+    input_series:
+      - series: 'answers_total{outcome="cited"}'
+        values: '0+5x90'
+      - series: 'answers_total{outcome="abstained"}'
+        values: '0+1x90'
+      - series: 'answers_total{outcome="unverified"}'
+        values: '0+0x90'
+    alert_rule_test:
+      - {eval_time: 80m, alertname: UnverifiedAnswerRateHigh, exp_alerts: []}
+
+  - name: empty retrieval rate fires
+    interval: 1m
+    input_series:
+      - series: 'retrieval_empty_total'
+        values: '0+2x90'
+      - series: 'answers_total{outcome="cited"}'
+        values: '0+4x90'
+      - series: 'answers_total{outcome="abstained"}'
+        values: '0+4x90'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: RetrievalEmptyRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warn}
+            exp_annotations: {summary: "Over 20% of questions retrieve nothing -- the vector index may be empty or unreachable"}
+
+  - name: ticket webhook failure
+    interval: 1m
+    input_series:
+      - series: 'ticket_webhook_total{status="failed"}'
+        values: '0 0 0 0 1 1 1 1'
+      - series: 'ticket_webhook_total{status="delivered"}'
+        values: '0 1 2 3 4 5 6 7'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: TicketWebhookFailing
+        exp_alerts:
+          - exp_labels: {severity: warn, status: failed}
+            exp_annotations: {summary: "Approved tickets are failing to reach the ITSM system (they exist in Postgres; webhook_status records why)"}
+      - {eval_time: 30m, alertname: TicketWebhookFailing, exp_alerts: []}
+
+  - name: approval backlog fires when decisions take hours
+    interval: 1m
+    input_series:
+      - series: 'approval_wait_seconds_bucket{le="3600"}'
+        values: '0+0x400'
+      - series: 'approval_wait_seconds_bucket{le="7200"}'
+        values: '0+1x400'
+      - series: 'approval_wait_seconds_bucket{le="+Inf"}'
+        values: '0+1x400'
+    alert_rule_test:
+      - eval_time: 300m
+        alertname: ApprovalBacklog
+        exp_alerts:
+          - exp_labels: {severity: warn}
+            exp_annotations: {summary: "p95 time from incident opened to decision is over an hour"}

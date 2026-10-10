@@ -4,12 +4,15 @@
 #   cp .env.example .env   # fill in every value docker-compose.yml marks required
 #   DOMAIN=ops.example.com ACME_EMAIL=you@example.com docker compose \
 #     -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-# Grafana is published directly on :3001 for simplicity -- put it behind your own VPN, SSO
-# proxy, or a Caddy route (this repo doesn't wire one; see README) before exposing it further.
+# Grafana is only reachable through Caddy at https://$DOMAIN/grafana/ (basic auth on top of
+# Grafana's own login). There is no SSO: that needs an identity provider this repo can't supply.
 services:
   api:
     environment:
       API_WORKERS: ${API_WORKERS:-4}
+      # Caddy is the one reverse proxy in front of the API; without this every user would
+      # share the proxy's address in the per-IP rate limit.
+      TRUSTED_PROXIES: "1"
     deploy:
       resources:
         limits: {cpus: "2", memory: 2g}
@@ -32,6 +35,8 @@ services:
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN (or 'localhost' for a self-signed cert) in .env}
       ACME_EMAIL: ${ACME_EMAIL:-}
+      GRAFANA_BASIC_USER: ${GRAFANA_BASIC_USER:-ops}
+      GRAFANA_BASIC_HASH: ${GRAFANA_BASIC_HASH:?set GRAFANA_BASIC_HASH (caddy hash-password) in .env}
     ports: ["80:80", "443:443"]
     volumes:
       - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
@@ -51,10 +56,12 @@ services:
     image: grafana/grafana:latest
     restart: unless-stopped
     depends_on: [prometheus]
-    ports: ["3001:3000"]
+    # Not published to the host: reachable only through Caddy at /grafana/ (basic auth).
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: https://${DOMAIN}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/grafana/dashboards:/etc/grafana/dashboards:ro

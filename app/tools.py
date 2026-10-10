@@ -80,6 +80,7 @@ def create_ticket(thread_id: str, alert: dict, diagnosis: str,
     metrics.TICKETS.inc()
     status = deliver_ticket_webhook(ticket)
     if status:
+        metrics.WEBHOOK.labels("delivered" if status == "delivered" else "failed").inc()
         with get_pool().connection() as conn:
             conn.execute("UPDATE tickets SET webhook_status = %s WHERE id = %s", (status, row[0]))
         ticket["webhook_status"] = status

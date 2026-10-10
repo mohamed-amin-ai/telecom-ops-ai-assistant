@@ -18,7 +18,7 @@ ADMIN_KEY = os.getenv("ADMIN_KEY", "")
 failures: list[str] = []
 
 
-def call(method: str, url: str, body: dict | None = None, timeout: int = 180, key: str = ""):
+def call(method: str, url: str, body: dict | None = None, timeout: int = int(os.getenv("SMOKE_TIMEOUT", "180")), key: str = ""):
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
     if key or KEY:

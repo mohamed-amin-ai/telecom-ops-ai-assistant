@@ -212,5 +212,13 @@ def scan_document(text: str) -> str | None:
     return label if label == "injection" else None
 
 
+def answer_outcome(text: str) -> str:
+    """cited | abstained | unverified. A citation wins: an answer that cites a runbook AND
+    hedges is still grounded."""
+    if CITATION.search(text):
+        return "cited"
+    return "abstained" if ABSTAIN.search(text) else "unverified"
+
+
 def has_grounding(text: str) -> bool:
-    return bool(CITATION.search(text) or ABSTAIN.search(text))
+    return answer_outcome(text) != "unverified"

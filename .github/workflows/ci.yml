@@ -18,6 +18,21 @@ jobs:
       - run: ruff check .
       - run: pytest -q
 
+  # Real promtool and real Caddy, no stack needed: the alert rules are unit-tested (each alert
+  # has a case where it must fire and one where it must not) and the proxy config is validated.
+  ops-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Alert rules - syntax and unit tests (promtool)
+        run: |
+          docker run --rm --entrypoint promtool -v "$PWD/ops/prometheus:/p:ro" prom/prometheus:v2.55.1 check rules /p/alerts.yml
+          docker run --rm --entrypoint promtool -v "$PWD/ops/prometheus:/p:ro" prom/prometheus:v2.55.1 test rules /p/alerts_test.yml
+      - name: Proxy config validates (caddy)
+        run: |
+          docker run --rm -e DOMAIN=localhost -e GRAFANA_BASIC_HASH='$2a$14$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123' \
+            -v "$PWD/ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.8-alpine caddy validate --config /etc/caddy/Caddyfile
+
   # Full compose stack: real Qdrant, TimescaleDB, Redis, Langfuse, real embeddings, the real
   # agent graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing,
   # judge JSON parsing) against a fake Anthropic server. This is not LLM_MOCK: it exercises
@@ -52,12 +67,18 @@ jobs:
         run: docker compose exec -T api python -m scripts.ingest
       - name: Seed KPIs
         run: docker compose exec -T api python -m scripts.seed_kpis
-      - name: Retrieval eval (real embeddings)
+      - name: Retrieval eval (real embeddings; intervals, nDCG, paired comparisons)
         run: |
-          docker compose exec -T api python -m evals.run_eval > retrieval.txt
-          python scripts/check_eval.py --min-hit 0.9 --min-mrr 0.85 < retrieval.txt
+          set -o pipefail
+          docker compose exec -T api python -m evals.run_eval --k 3 > retrieval_raw.txt
+          python scripts/format_retrieval.py < retrieval_raw.txt | tee retrieval.txt
+          # Gate on the LOWER confidence bound, not the point estimate. The hard set has no
+          # floor yet: it has to be measured once before a floor means anything.
+          python scripts/check_eval.py --split standard --min-hit-lo 0.90 --min-mrr-lo 0.85 < retrieval_raw.txt > /dev/null
       - name: Guardrail eval (rules + real LLM classifier call, via fake server)
-        run: docker compose exec -T api python -m evals.run_guard_eval
+        run: |
+          set -o pipefail
+          docker compose exec -T api python -m evals.run_guard_eval 2>&1 | grep -Ev "LiteLLM\.Info|Give Feedback" | tee guard.txt
       - name: Red-team eval (deterministic rule layer; not model-dependent, so run once here)
         run: |
           set -o pipefail
@@ -120,6 +141,7 @@ jobs:
               t = t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               print(f"::{level} title={title}::{t}")
           ann("notice", "retrieval eval (real embeddings)", "retrieval.txt")
+          ann("notice", "guardrail eval", "guard.txt")
           ann("notice", "red-team eval", "redteam.txt")
           ann("notice", "e2e smoke (fake Anthropic)", "smoke.txt")
           ann("notice", "e2e UI (fake Anthropic)", "ui.txt")
@@ -134,6 +156,77 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.ci.yml down -v
+
+  # The production overlay, actually run: Caddy with TLS, multiple workers, Prometheus and
+  # Grafana. Uses the fake Anthropic server so it needs no key. Every claim the README makes
+  # about the proxy and the metrics pipeline is asserted by scripts/prod_smoke.sh.
+  prod-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure env (production overlay, fake Anthropic)
+        run: |
+          HASH=$(docker run --rm caddy:2.8-alpine caddy hash-password --plaintext 'grafana-basic-pass')
+          cp .env.example .env
+          {
+            echo "ANTHROPIC_API_KEY=ci-fake-key"
+            echo "ANTHROPIC_API_BASE=http://fake-anthropic:8099"
+            echo "RATE_LIMIT_PER_MIN=1000"
+            echo "IP_RATE_LIMIT_PER_MIN=1000"
+            echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"
+            echo "LANGFUSE_SALT=ci-langfuse-salt"
+            echo "CHAINLIT_AUTH_SECRET=ci-chainlit-secret"
+            echo "AUTH_REQUIRED=1"
+            echo "BOOTSTRAP_API_KEYS=ci-approver:approver:ci-approver-key"
+            echo "DOMAIN=localhost"
+            echo "API_WORKERS=2"
+            echo "GRAFANA_ADMIN_PASSWORD=ci-grafana-admin"
+            # single quotes: the bcrypt hash contains $ and Compose would otherwise interpolate it
+            echo "GRAFANA_BASIC_HASH='$HASH'"
+          } >> .env
+      - name: Start the production stack
+        run: |
+          set +e
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml up -d --build --wait --wait-timeout 600 > up.log 2>&1
+          rc=$?
+          tail -n 40 up.log
+          exit $rc
+      - name: Ingest docs and seed KPIs
+        run: |
+          docker compose exec -T api python -m scripts.ingest
+          docker compose exec -T api python -m scripts.seed_kpis
+      - name: Production smoke (TLS, routing, exposure, metrics pipeline, alerts, Grafana)
+        env:
+          DC: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml
+          GRAFANA_BASIC_USER: ops
+          GRAFANA_BASIC_PASS: grafana-basic-pass
+          GRAFANA_ADMIN_PASS: ci-grafana-admin
+          API_KEY: ci-approver-key
+        run: |
+          set -o pipefail
+          bash scripts/prod_smoke.sh 2>&1 | tee prod.txt
+      - name: Publish results as annotations
+        if: always()
+        run: |
+          DC='docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml' bash scripts/ci_diag.sh > prod.log 2>&1 || true
+          python3 - <<'PY'
+          import pathlib
+          def ann(level, title, path, limit=7000):
+              p = pathlib.Path(path)
+              if not p.exists():
+                  return
+              t = p.read_text(errors="replace")[-limit:]
+              t = t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::{level} title={title}::{t}")
+          ann("error", "docker compose up output (tail)", "up.log", 3000)
+          ann("notice", "production smoke", "prod.txt")
+          ann("warning", "container states and unhealthy service logs", "prod.log", 6000)
+          PY
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml down -v
 
   # Real local model (Ollama), completely free -- no API key, no account, no credits.
   # GitHub Actions minutes are unlimited for public repos, so this costs nothing and runs
@@ -170,6 +263,8 @@ jobs:
           docker compose exec -T api python -m scripts.ingest
           docker compose exec -T api python -m scripts.seed_kpis
       - name: End-to-end smoke (real local model)
+        env:
+          SMOKE_TIMEOUT: "420"  # small CPU runner shared with the RAGAS shards
         run: |
           set -o pipefail
           python scripts/e2e_smoke.py 2>&1 | tee smoke.txt
@@ -199,15 +294,20 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local down -v
 
   # RAGAS scored by a local Ollama model: no key, no account, no credit. A model small
-  # enough for a free CPU runner is a weak judge (expect noisy scores and some unparseable
-  # rows, reported as nan_rows), so treat the numbers as a trend, not a certification, and
-  # don't compare them with scores from a stronger judge. Runs on pushes to main and manual
-  # dispatch only (it is slow), and uses a handful of questions, one judge request at a time.
+  # enough for a free CPU runner is a weak judge, so scores are noisy; what makes the result
+  # usable anyway is sample size and uncertainty. 24 questions (half standard, half hard) are
+  # split across 4 parallel jobs, each scoring 6 with one judge request at a time, and the
+  # report job pools them into means with bootstrap intervals, counting (not hiding)
+  # unparseable rows. Pushes to main and manual dispatch only: it is slow (~40 min).
   ragas-ollama:
     runs-on: ubuntu-latest
     needs: stack
     if: github.event_name != 'pull_request'
     timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v5
       - name: Configure env (local Ollama judge, eval dependencies)
@@ -231,42 +331,63 @@ jobs:
         run: docker compose exec -T ollama ollama pull qwen2.5:3b-instruct
       - name: Ingest docs
         run: docker compose exec -T api python -m scripts.ingest
-      - name: RAGAS (faithfulness, answer relevancy, context precision/recall)
+      - name: RAGAS shard ${{ matrix.shard }} of 4
         run: |
           # stdout is the result JSON only; warnings and per-job errors go to ragas.err and
-          # are summarized below, because RAGAS repeats the same error once per failed job
-          # and that noise buried the actual result in the last run.
+          # are summarized, because RAGAS repeats the same error once per failed job.
           set +e
-          docker compose exec -T api python -W ignore -m evals.run_ragas --limit 6 --workers 1 --timeout 600 \
-            --min-faithfulness 0.01 --min-answer-relevancy 0.01 \
-            --min-context-precision 0.01 --min-context-recall 0.01 > ragas.txt 2> ragas.err
+          docker compose exec -T api python -W ignore -m evals.run_ragas --limit 24 --shard ${{ matrix.shard }}/4 \
+            --workers 1 --timeout 600 --out /tmp/ragas_rows.json > ragas.txt 2> ragas.err
           rc=$?
           set -e
           grep -o 'Exception raised in Job\[[0-9]*\]: [A-Za-z]*Error([^:]*' ragas.err | sed 's/Job\[[0-9]*\]/Job[n]/' | sort | uniq -c | sort -rn | head -8 > ragas_errors.txt || true
-          cat ragas.txt
-          echo "--- error summary (count, message) ---"; cat ragas_errors.txt
-          { echo '### RAGAS (local qwen2.5:3b judge)'; echo '```'; cat ragas.txt; echo '--- errors ---'; cat ragas_errors.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat ragas.txt; echo "--- error summary ---"; cat ragas_errors.txt
+          docker compose cp api:/tmp/ragas_rows.json ragas_rows_${{ matrix.shard }}.json || true
           exit $rc
-      - name: Publish results as annotations
+      - uses: actions/upload-artifact@v4
         if: always()
-        run: |
-          docker compose logs --no-color --tail 300 api > api.log 2>&1 || true
-          python3 - <<'PY'
-          import pathlib
-          def ann(level, title, path, limit=6000):
-              p = pathlib.Path(path)
-              if not p.exists():
-                  return
-              t = p.read_text(errors="replace")[-limit:]
-              t = t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-              print(f"::{level} title={title}::{t}")
-          ann("notice", "RAGAS result", "ragas.txt")
-          ann("error", "RAGAS error summary", "ragas_errors.txt")
-          ann("warning", "api container log (tail, ragas)", "api.log", 3000)
-          PY
+        with:
+          name: ragas-shard-${{ matrix.shard }}
+          path: ragas_rows_${{ matrix.shard }}.json
+          if-no-files-found: warn
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local down -v
+
+  ragas-report:
+    runs-on: ubuntu-latest
+    needs: ragas-ollama
+    if: always() && github.event_name != 'pull_request' && needs.ragas-ollama.result != 'skipped'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ragas-shard-*
+          merge-multiple: true
+      - name: Pool shards (means, bootstrap intervals, failed-row counts)
+        run: |
+          ls -la ragas_rows_*.json
+          set -o pipefail
+          # needs at least 60% of rows scored per metric: a mean over the rows that happened
+          # to parse says nothing about the ones that did not
+          python -m evals.aggregate_ragas ragas_rows_*.json --min-scored 0.6 | tee ragas_report.txt
+          { echo '### RAGAS, pooled over shards (local qwen2.5:3b judge)'; echo '```'; cat ragas_report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish as annotation
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("ragas_report.txt")
+          if p.exists():
+              t = p.read_text(errors="replace")
+              try:  # compact the pretty-printed JSON so the annotation isn't truncated mid-way
+                  start = t.index("{"); end = t.rindex("}") + 1
+                  t = json.dumps(json.loads(t[start:end])) + t[end:]
+              except ValueError:
+                  pass
+              t = t[-7000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::notice title=RAGAS pooled result::{t}")
+          PY
 
   # Same stack against a real hosted LLM. Runs only when either ANTHROPIC_API_KEY or
   # OPENROUTER_API_KEY exists as a repository secret (Settings > Secrets and variables >
