@@ -230,6 +230,48 @@ number can't separate pipeline from model. It is not evidence about Claude-quali
 answers, which has never been measured here. There is no CI gate on these scores yet; the
 point of recording them is a baseline to beat, not a pass mark.
 
+## Real 3GPP data
+The bundled runbooks are synthetic. To index real 3GPP specifications (KPI and counter
+definitions TS 28.554/28.552/32.450/32.425, RRC TS 38.331/36.331, architecture TS 23.501,
+and others -- list in `scripts/fetch_3gpp.py`; the default is the KPI/PM/overview core):
+
+```bash
+pip install -r requirements.txt -r requirements-eval.txt     # python-docx converts the .docx
+python -m scripts.fetch_3gpp                    # core set -> data/3gpp/*.md + MANIFEST.json (Rel-18)
+# python -m scripts.fetch_3gpp --all            # + RRC/architecture specs (~15k chunks: 30+ min to embed on CPU)
+docker compose build api                        # data/3gpp is copied into the image
+docker compose exec api python -m scripts.ingest --docs data/docs data/3gpp
+```
+Each converted file's title carries the spec number, release, version and source URL, and
+citations show the file name, so answers point at a specific spec. The specs are free to
+download from 3GPP but are copyright of its partner organizations (ETSI, ARIB, ATIS, CCSA,
+TSDSI, TTA, TTC), so this repo ships the downloader, not the documents (`data/3gpp/` is
+git-ignored). The `real-3gpp` CI job runs the whole path against the live archive and
+publishes the manifest.
+
+**Measured (CI, live archive, Rel-18, commit `1281234`):** all 8 core specs converted and
+indexed -- TS 28.554 v18.9.0, 28.552 v18.12.0, 32.450 v18.0.0, 32.425 v18.0.0, 38.300 v18.11.0,
+38.331 v18.11.0 (5,244 chunks, the largest), 36.300 v18.8.0, 28.532 v18.8.0 -- 9,624 chunks in
+total with real embeddings, none quarantined, and all gating findability checks passing,
+including a protocol-identifier lookup (`reconfigurationWithSync` -> TS 38.331).
+One non-gating finding: the plain-English query "RRC reconfiguration with synchronisation
+for handover" does **not** surface the chunk containing that identifier in its top 5 (TS 38.331
+and 38.300 are returned, but not the right passage), so natural-language questions about
+protocol-level details will retrieve less reliably than identifier lookups. Earlier runs
+found and fixed three defects: legitimate spec text ("no Filters") being quarantined as
+injection, the CI check printing FAIL without failing the job, and a wrong size floor that
+rejected TS 32.450, which really is only ~18k characters.
+
+**What this does not give you yet:** 3GPP specs define KPIs and procedures; they are not
+operational runbooks, so diagnoses will cite definitions rather than your site's actions.
+There are no golden questions for these documents, so retrieval quality on them is
+*unmeasured* (the eval tables above are for the synthetic runbooks); `scripts/check_3gpp.py`
+only checks that every spec was indexed and a few telecom terms are findable. Specs that
+ship only as legacy `.doc` (e.g. TS 32.450/32.425) are converted with LibreOffice if it is
+installed (`apt install libreoffice-writer-nogui`) and skipped otherwise, and tables/figures are converted best-effort
+(figures are dropped). Re-run `scripts.ingest` after adding documents: it recreates the
+collection from the directories you pass, so always pass all of them.
+
 ## Self-hosted LLM with vLLM
 Any model string `hosted_vllm/<served-model>` (for `LLM_MODEL`, `LLM_FALLBACK_MODEL`,
 `JUDGE_MODEL`, `GUARD_MODEL`) is routed by `app/llm.py` to `VLLM_BASE_URL` with

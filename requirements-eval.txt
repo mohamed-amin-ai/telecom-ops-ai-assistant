@@ -2,3 +2,4 @@
 ragas>=0.4,<0.5
 langchain-community<0.4
 langchain-litellm
+python-docx>=1.1

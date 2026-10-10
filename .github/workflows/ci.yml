@@ -39,6 +39,62 @@ jobs:
           VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct VLLM_API_KEY=ci \
             docker compose --env-file .env -f docker-compose.yml -f docker-compose.vllm.yml config --services | grep -x vllm
 
+  # Real 3GPP specifications from the public archive, converted and ingested with real
+  # embeddings. Needs internet (the dev sandbox has none; GitHub runners do), so this is the
+  # only place the download/convert/ingest path is exercised against the real thing.
+  real-3gpp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash  # GitHub's explicit bash adds pipefail, so `cmd | tee` can fail the step
+    needs: test
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt -r requirements-eval.txt
+      - name: LibreOffice (some 3GPP specs, e.g. TS 32.xxx, ship only as legacy .doc)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui 2>&1 | tail -5
+          soffice --version
+      - name: Download and convert the specs
+        run: python -m scripts.fetch_3gpp 2>&1 | tee fetch.txt
+      - name: Start Qdrant
+        run: |
+          docker run -d --name qdrant -p 6333:6333 qdrant/qdrant:v1.13.6
+          for i in $(seq 1 30); do curl -sf localhost:6333/readyz && break; sleep 2; done
+      - name: Ingest runbooks + 3GPP specs (real embeddings)
+        env: {QDRANT_URL: "http://localhost:6333"}
+        run: python -m scripts.ingest --docs data/docs data/3gpp 2>&1 | tee ingest.txt
+      - name: Check the corpus is searchable
+        env: {QDRANT_URL: "http://localhost:6333"}
+        run: python -m scripts.check_3gpp 2>&1 | tee check.txt
+      - name: Summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          def ann(level, title, text):
+              text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::{level} title={title}::{text}")
+          for f, t in (("fetch.txt", "3GPP download"), ("ingest.txt", "ingest"), ("check.txt", "corpus checks")):
+              p = pathlib.Path(f)
+              if p.exists():
+                  lines = p.read_text().splitlines()
+                  ann("notice", t, "\n".join(lines[-25:]))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: 3gpp-manifest
+          path: |
+            data/3gpp/MANIFEST.json
+            fetch.txt
+            ingest.txt
+            check.txt
+
   # Full compose stack: real Qdrant, TimescaleDB, Redis, Langfuse, real embeddings, the real
   # agent graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing,
   # judge JSON parsing) against a fake Anthropic server. This is not LLM_MOCK: it exercises

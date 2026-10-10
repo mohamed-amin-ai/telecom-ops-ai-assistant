@@ -204,11 +204,44 @@ def rule_check(text: str) -> str | None:
     return None
 
 
+def injection_evidence(text: str) -> str:
+    """Which rule fired and on what text, for the ingest log (so a false positive on a real
+    document can be diagnosed from CI output instead of guessed at)."""
+    forms, squashed = variants(text)
+    for p in _PHRASES:
+        if p in squashed:
+            return f"squashed phrase {p!r}"
+    for i, form in enumerate(forms):
+        for p in [*INJECTION_PATTERNS, *INJECTION_CASE_SENSITIVE]:
+            m = p.search(form)
+            if m:
+                return f"form#{i} pattern {p.pattern[:60]!r} matched {m.group(0)[:100]!r}"
+    return "unknown"
+
+
+# "no filters" / "without restrictions" is a jailbreak when it addresses the model, but real
+# 3GPP text says it constantly ("no Filters", "transmitted without restrictions"). In a
+# DOCUMENT it only counts if something addressing the model sits right before it.
+_BARE_RESTRICTION = re.compile(
+    r"\b(?:without|no)\s+(?:any\s+)?(?:restrictions|limitations|limits|rules|filters|"
+    r"guardrails|censorship)\b", re.IGNORECASE)
+_ADDRESSES_MODEL = re.compile(
+    r"\b(?:you|your|you're|answer|respond|reply|behave|assistant|chatbot|act as|from now on)\b",
+    re.IGNORECASE)
+
+
+def _drop_technical_restrictions(text: str) -> str:
+    def repl(m: re.Match) -> str:
+        window = text[max(0, m.start() - 80):m.start()]
+        return m.group(0) if _ADDRESSES_MODEL.search(window) else "[x]"
+    return _BARE_RESTRICTION.sub(repl, text)
+
+
 def scan_document(text: str) -> str | None:
     """Ingest-time check for indirect prompt injection: a retrieved runbook chunk that tries
     to instruct the model. Only the injection rules apply (runbooks legitimately discuss
     subscribers and identifiers)."""
-    label = rule_check(text)
+    label = rule_check(_drop_technical_restrictions(text))
     return label if label == "injection" else None
 
 

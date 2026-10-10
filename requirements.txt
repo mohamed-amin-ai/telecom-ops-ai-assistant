@@ -6,7 +6,7 @@ litellm>=1.99,<1.104
 langfuse>=2.60,<3
 langgraph>=0.4
 langgraph-checkpoint-postgres
-qdrant-client>=1.10
+qdrant-client>=1.13,<1.15  # server is pinned to 1.13.x; the client warns beyond +-1 minor
 fastembed
 psycopg[binary]>=3.1
 psycopg-pool

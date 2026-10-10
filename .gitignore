@@ -6,3 +6,5 @@ __pycache__/
 data/tickets.jsonl
 .chainlit/
 chainlit.md
+
+data/3gpp/

@@ -10,7 +10,7 @@ from qdrant_client import QdrantClient, models
 from . import metrics
 from .chunking import chunk_markdown, chunk_text
 from .config import settings
-from .guard_rules import answer_outcome, scan_document
+from .guard_rules import answer_outcome, injection_evidence, scan_document
 from .guardrails import check_input, check_output
 from .llm import chat
 
@@ -66,39 +66,44 @@ def read_file(p: Path) -> str:
     return p.read_text(encoding="utf-8", errors="ignore")
 
 
-def ingest(docs_dir: str = "data/docs", recreate: bool = False) -> int:
+def ingest(docs_dir: str | list[str] = "data/docs", recreate: bool = False) -> int:
     ensure_collection(recreate)
     texts, payloads, ids = [], [], []
-    for p in sorted(Path(docs_dir).rglob("*")):
+    dirs = [docs_dir] if isinstance(docs_dir, str) else list(docs_dir)
+    for p in sorted(f for d in dirs for f in Path(d).rglob("*")):
         if p.suffix.lower() not in {".md", ".txt", ".pdf"}:
             continue
         chunker = chunk_text if p.suffix.lower() == ".txt" else chunk_markdown
         for i, ch in enumerate(chunker(read_file(p))):
             flag = scan_document(ch)
             if flag:  # a runbook chunk that tries to instruct the model: never index it
-                log.warning("quarantined chunk %s#%d at ingest: %s", p.name, i, flag)
+                log.warning("quarantined chunk %s#%d at ingest: %s (%s)", p.name, i, flag,
+                            injection_evidence(ch))
                 continue
             texts.append(ch)
             payloads.append({"source": p.name, "chunk": i, "text": ch})
             ids.append(str(uuid.uuid5(uuid.NAMESPACE_URL, f"{p.name}:{i}")))  # idempotent
     if not texts:
         return 0
-    dense = list(_dense().embed(texts))
-    sparse = list(_sparse().embed(texts))
-    points = [
-        models.PointStruct(
-            id=pid,
-            vector={
-                "dense": d.tolist(),
-                "bm25": models.SparseVector(indices=s.indices.tolist(), values=s.values.tolist()),
-            },
-            payload=pl,
-        )
-        for pid, d, s, pl in zip(ids, dense, sparse, payloads)
-    ]
-    for i in range(0, len(points), 64):
-        _client().upsert(settings.collection, points=points[i : i + 64])
-    return len(points)
+    n = 0
+    for i in range(0, len(texts), 64):  # batch: real corpora (3GPP specs) are thousands of chunks
+        bt = texts[i : i + 64]
+        points = [
+            models.PointStruct(
+                id=pid,
+                vector={
+                    "dense": d.tolist(),
+                    "bm25": models.SparseVector(indices=sp.indices.tolist(),
+                                                values=sp.values.tolist()),
+                },
+                payload=pl,
+            )
+            for pid, d, sp, pl in zip(ids[i : i + 64], _dense().embed(bt), _sparse().embed(bt),
+                                      payloads[i : i + 64])
+        ]
+        _client().upsert(settings.collection, points=points)
+        n += len(points)
+    return n
 
 
 def retrieve(query: str, k: int | None = None, mode: str | None = None,
