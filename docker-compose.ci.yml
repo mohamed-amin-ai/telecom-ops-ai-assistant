@@ -1,9 +1,9 @@
-# CI override: a fake Anthropic endpoint (exercises the real LiteLLM/guardrail/judge code
+# CI override: a fake LLM endpoint (exercises the real LiteLLM/guardrail/judge code
 # paths without a key or network) and a headless Langfuse project (pk-lf-ci / sk-lf-ci).
 services:
-  fake-anthropic:
+  fake-llm:
     build: .
-    command: python -m scripts.fake_anthropic
+    command: python -m scripts.fake_llm
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8099/', timeout=3)"]
       interval: 5s
@@ -24,7 +24,7 @@ services:
 
   api:
     depends_on:
-      fake-anthropic:
+      fake-llm:
         condition: service_healthy
     environment:
-      ANTHROPIC_API_BASE: http://fake-anthropic:8099
+      ANTHROPIC_API_BASE: http://fake-llm:8099

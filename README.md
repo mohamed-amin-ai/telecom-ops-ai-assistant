@@ -12,7 +12,7 @@ flowchart LR
   AU --> G[Input guardrails]
   G --> R[Hybrid retrieval<br/>Qdrant dense + BM25]
   G --> K[KPI profile<br/>TimescaleDB]
-  R --> D[LLM diagnosis<br/>LiteLLM: Anthropic / OpenRouter / Ollama]
+  R --> D[LLM diagnosis<br/>LiteLLM: Ollama / vLLM, free self-hosted]
   K --> D
   D --> O[Output guardrails]
   O --> H{Human approval<br/>role: approver+}
@@ -24,7 +24,7 @@ flowchart LR
 ## Run
 ```bash
 cp .env.example .env
-# Fill in: an LLM key (ANTHROPIC_API_KEY or OPENROUTER_API_KEY), BOOTSTRAP_API_KEYS,
+# Fill in: BOOTSTRAP_API_KEYS,
 # CHAINLIT_AUTH_SECRET, LANGFUSE_NEXTAUTH_SECRET, LANGFUSE_SALT (docker-compose.yml refuses
 # to start any of these missing -- that's deliberate, not a bug).
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
@@ -43,10 +43,7 @@ automatically via a one-shot `migrate` service before `api` starts; re-run any t
 - **Metrics:** http://localhost:8000/metrics (Prometheus format).
 - **Langfuse:** http://localhost:3000.
 - **Manage API keys:** `docker compose exec api python -m scripts.create_api_key --name alice --role approver` (prints the key once; only its hash is stored). `--revoke NAME`, `--list`.
-- **OpenRouter instead of a direct Anthropic key:** set `OPENROUTER_API_KEY` and point
-  `LLM_MODEL` / `JUDGE_MODEL` / `GUARD_MODEL` at `openrouter/<provider>/<model>` strings --
-  see `.env.example`.
-- **Local model, no key at all:** `docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local up -d`, then `docker compose exec ollama ollama pull qwen2.5:7b-instruct`.
+- **Models:** no paid API anywhere; the default is local Ollama (`qwen2.5:3b-instruct`). `docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local up -d`, then `docker compose exec ollama ollama pull qwen2.5:7b-instruct`.
 
 ### Production
 ```bash
@@ -180,6 +177,12 @@ under real load, a real model's latency, or against a real database under write 
   Sentry-compatible receiver and confirmed neither appeared in the captured event.
 
 ## KPI data
+
+**Real data:** per-cell operator counters (PRB utilisation, RRC/handover success) are not published openly;
+the closest public sets are client-side UE traces (e.g. the Irish 5G trace dataset, GPL-3.0, RSRP/SNR/throughput),
+which do not have this schema, so none is bundled. To use a real export from your OSS/PM system:
+`python -m scripts.import_kpis export.csv` (long format) or `--wide --kpi-cols ... --rename "Vendor Name=kpi"`.
+The seed below stays the default demo data.
 `python -m scripts.ingest_kpis data.csv` (long format: `ts,cell_id,kpi,value`) or
 `--wide` (`ts,cell_id,<kpi_1>,<kpi_2>,...`). Idempotent (a unique index means re-loading the
 same file inserts nothing new); malformed rows are counted and skipped, not fatal.
@@ -256,8 +259,8 @@ faithfulness 0.78-0.88, was too small and too easy to be representative). On the
 the pipeline is weak: faithfulness 0.14 means a 3B model, given the retrieved passages,
 mostly produces claims the judge cannot ground in them. Retrieval is part of it (hard-set
 context precision 0.67), but a 3B generator and a 3B judge are both in the loop, so this
-number can't separate pipeline from model. It is not evidence about Claude-quality
-answers, which has never been measured here. There is no CI gate on these scores yet; the
+number can't separate pipeline from model. It is not evidence about larger-model
+answers, which have never been measured here. There is no CI gate on these scores yet; the
 point of recording them is a baseline to beat, not a pass mark.
 
 ## Real 3GPP data
@@ -360,8 +363,8 @@ Measured in CI (non-gating) on small local models:
 Both models never attempted a write. The 3B model always opens alert triage with `get_kpis` instead of
 `kpi_profile` (0/11), so it is *worse* than 1.5B on triage; the safety net exists for exactly this.
 Caveats: the scenarios are mine, the sample is small, and these are regression/comparison numbers, not production accuracy.
-Real tool calling was exercised end to end only against a fake Anthropic `tool_use` server (full stack in CI)
-and local Ollama models. It has not been measured on real Claude or a vLLM-served model.
+Real tool calling was exercised end to end only against a fake LLM server that emulates `tool_use` (full stack in CI)
+and local Ollama models. It has not been measured on a larger model or a vLLM-served one.
 
 ## Layout
 - `app/rag.py`: ingest (with ingest-time injection scanning) and hybrid retrieval (Qdrant
@@ -378,7 +381,7 @@ and local Ollama models. It has not been measured on real Claude or a vLLM-serve
 - `app/metrics.py`, `app/observability.py`: Prometheus metrics, structured logs, Sentry
 - `app/mcp_server.py`: read-only tools over MCP (`python -m app.mcp_server`)
 - `app/guard_rules.py`, `app/guardrails.py`: input/output guardrails, ingest-time scanning
-- `app/llm.py`: LiteLLM entry point (Anthropic/OpenRouter/Ollama, retries, Langfuse tracing)
+- `app/llm.py`: LiteLLM entry point (Ollama/vLLM, retries, Langfuse tracing)
 - `ui/app.py`: Chainlit UI with per-user login
 - `db/migrations/`, `scripts/migrate.py`: versioned schema migrations, tracked in a
   `schema_migrations` table, applied by a one-shot compose service
@@ -393,7 +396,7 @@ and local Ollama models. It has not been measured on real Claude or a vLLM-serve
 `docker compose up` had never been run before the `stack` CI job existed, because it was
 built and validated with stubbed embeddings and a mocked LLM. Running the real stack found
 real bugs, each with a regression test:
-- **LiteLLM rejects `temperature=0` for `claude-sonnet-5`.** `app/llm.py` retries once
+- **LiteLLM rejects `temperature=0` for some models.** `app/llm.py` retries once
   without `temperature` on that specific error.
 - **The KPI anomaly check missed faults on ratio KPIs near 100%** (noise floor was too wide
   relative to how little those KPIs normally move). Tightened from 5% to 1% of baseline.
@@ -404,12 +407,9 @@ real bugs, each with a regression test:
   `COPY . .`**, and Chainlit's own `__init__.py` unconditionally reloads `.env` from its
   working directory on import -- so the UI container picked up the API's `DATABASE_URL`
   and tried to use it as its own (incompatible) chat-persistence database. Also meant
-  `ANTHROPIC_API_KEY` was leaking into every image layer. A `.dockerignore` fixes both.
-- **OpenRouter model slugs go stale** (`claude-3-haiku` and `claude-3.5-sonnet` were both
-  removed from its catalog after this repo's knowledge cutoff) **and OpenRouter preflight-
-  checks cost against `max_tokens`**, rejecting a call an unfunded account can't cover the
-  full window for even when actual usage is tiny. Capped `max_tokens` by default and added
-  `litellm`'s own retry/backoff for transient rate limits.
+  API keys were leaking into every image layer. A `.dockerignore` fixes both.
+- **Hosted gateways preflight-check cost against `max_tokens`** and rate-limit in bursts.
+  Capped `max_tokens` by default and added `litellm`'s own retry/backoff for transient rate limits.
 - **RAGAS on a local model needed two fixes before it produced a score.** ResponseRelevancy
   asks for several completions per call (`n=3`) and Ollama has no `n`, so litellm raised on
   every such row (fixed by dropping unsupported params in the eval script only). Then every
@@ -421,7 +421,7 @@ real bugs, each with a regression test:
 - **A swallowed primary-provider exception, an oversized traceback, a noisy third-party
   banner, and this project's own `exc_info=True` logging** each independently buried the
   actual error under CI log truncation at different points -- four separate fixes before the
-  real OpenRouter errors above were even visible. The lesson embedded in the code now: guard
+  real provider errors were even visible. The lesson embedded in the code now: guard
   the fail-open logging path against duplicate-request-during-an-outage log floods
   (`app/guardrails.py`), and prefer a short greppable line over `exc_info=True` for anything
   that can fire once per request.
@@ -455,13 +455,9 @@ missing, roughly in order of what would bite first:
 - **Third-party images are pinned** (`QDRANT_TAG`, `TIMESCALE_TAG`, ... in the compose files)
   instead of `:latest`, so a rebuild can't silently change versions; bumping them is now a
   deliberate edit that CI exercises. Langfuse is pinned to its `:2` major only.
-- **Quality with a real frontier model (Claude) has never been measured end to end.** The
-  paid `live` CI job needs a funded key, which this repo's owner doesn't have, so with no
-  secret set it skips. Everything model-dependent that has been measured used a local 3B
-  model (`live-ollama` for the code path on every push, `ragas-ollama` for the RAGAS scores
-  above); `stack` covers the wiring against a fake Anthropic server. The `live` job's checks
-  did mostly pass against OpenRouter before its credit limits blocked them, but it never
-  completed in one run.
+- **Only small free local models (3B class) have been measured.** There is no paid API in this
+  repo, so quality with a larger model is unknown. `stack` covers the wiring against a fake
+  fake LLM server (no key, no cost); `live-ollama` and `ragas-ollama` use real local models.
 - **Guardrail red-teaming is still one person's (mine) 122 cases**, not a professional
   red-team engagement, and attack detection on unseen phrasings is about 70% with the LLM layer and under 30% with
   rules alone -- see Red team above for what those numbers do and don't mean.

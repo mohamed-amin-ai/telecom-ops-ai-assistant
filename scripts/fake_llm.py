@@ -1,4 +1,4 @@
-"""Minimal fake of the Anthropic Messages API for CI. It lets the REAL LiteLLM code path
+"""Minimal fake LLM server (Messages-style wire format) for CI. It lets the REAL LiteLLM code path
 (request formation, response parsing, guardrail classifier JSON, judge JSON, Langfuse
 callbacks) run without an API key. It does not test model quality."""
 import json
@@ -22,7 +22,7 @@ KPI = re.compile(r"'kpi':\s*'([^']+)'")
 
 def tool_turn(req: dict, first_user: str):
     """Scripted tool use for the investigation agent: kpi_profile, search_runbooks,
-    ticket_history, then a text summary. Returns Anthropic content blocks."""
+    ticket_history, then a text summary. Returns content blocks."""
     done = sum(1 for m in req.get("messages", []) if isinstance(m.get("content"), list)
                for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result")
     cell = (CELL.search(first_user) or [None, "CELL_001"])[1]

@@ -8,8 +8,8 @@ def _flag(name: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
-    llm_model: str = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-5")
-    llm_fallback_model: str = os.getenv("LLM_FALLBACK_MODEL", "ollama/qwen2.5:7b-instruct")
+    llm_model: str = os.getenv("LLM_MODEL", "ollama_chat/qwen2.5:3b-instruct")
+    llm_fallback_model: str = os.getenv("LLM_FALLBACK_MODEL", "ollama_chat/qwen2.5:3b-instruct")
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
     # Self-hosted vLLM (OpenAI-compatible server). Use model strings "hosted_vllm/<served-model>"
     # for LLM_MODEL / LLM_FALLBACK_MODEL / JUDGE_MODEL / GUARD_MODEL.
@@ -35,11 +35,11 @@ class Settings:
         "DATABASE_URL", "postgresql://telecom:telecom@localhost:5432/telecom"
     )
     db_pool_max: int = int(os.getenv("DB_POOL_MAX", "10"))
-    judge_model: str = os.getenv("JUDGE_MODEL", "anthropic/claude-haiku-4-5-20251001")
+    judge_model: str = os.getenv("JUDGE_MODEL", "ollama_chat/qwen2.5:3b-instruct")
 
     guardrails_enabled: bool = _flag("GUARDRAILS", True)
     guard_llm: bool = _flag("GUARD_LLM", True)
-    guard_model: str = os.getenv("GUARD_MODEL", "anthropic/claude-haiku-4-5-20251001")
+    guard_model: str = os.getenv("GUARD_MODEL", "ollama_chat/qwen2.5:3b-instruct")
 
     # Auth and limits. AUTH_REQUIRED=0 is for local hacking only: every caller becomes admin.
     auth_required: bool = _flag("AUTH_REQUIRED", True)

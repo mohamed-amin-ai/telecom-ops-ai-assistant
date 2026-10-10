@@ -116,8 +116,8 @@ jobs:
 
   # Full compose stack: real Qdrant, TimescaleDB, Redis, Langfuse, real embeddings, the real
   # agent graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing,
-  # judge JSON parsing) against a fake Anthropic server. This is not LLM_MOCK: it exercises
-  # every line between our code and the Anthropic wire format, just not real model quality.
+  # judge JSON parsing) against a fake LLM server. This is not LLM_MOCK: it exercises
+  # every line between our code and the provider wire format, just not real model quality.
   # Auth is on (AUTH_REQUIRED=1) with three bootstrapped test users, one per role, so the
   # whole auth/audit/approval-lock system runs for real here too, not just in unit tests.
   stack:
@@ -126,12 +126,15 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
-      - name: Configure env (fake Anthropic + Langfuse + auth)
+      - name: Configure env (fake LLM + Langfuse + auth)
         run: |
           cp .env.example .env
           {
             echo "ANTHROPIC_API_KEY=ci-fake-key"
-            echo "ANTHROPIC_API_BASE=http://fake-anthropic:8099"
+            echo "ANTHROPIC_API_BASE=http://fake-llm:8099"
+            echo "LLM_MODEL=anthropic/ci-fake-model"
+            echo "JUDGE_MODEL=anthropic/ci-fake-model"
+            echo "GUARD_MODEL=anthropic/ci-fake-model"
             echo "RATE_LIMIT_PER_MIN=1000"
             echo "IP_RATE_LIMIT_PER_MIN=1000"
             echo "LANGFUSE_PUBLIC_KEY=pk-lf-ci"
@@ -178,7 +181,7 @@ jobs:
           "
       - name: End-to-end smoke (real LiteLLM path via fake server, real auth)
         env:
-          EXPECT_AGENTIC: "1"  # the fake server emulates Anthropic tool_use for the investigator
+          EXPECT_AGENTIC: "1"  # the fake server emulates tool_use for the investigator
           API_KEY: ci-approver-key
           OPERATOR_KEY: ci-operator-key
           ADMIN_KEY: ci-admin-key
@@ -196,7 +199,7 @@ jobs:
           playwright install --with-deps chromium
           set -o pipefail
           python scripts/e2e_ui.py 2>&1 | tee ui.txt
-      - name: Concurrency smoke (fake Anthropic, real Postgres/Redis/Qdrant, real auth)
+      - name: Concurrency smoke (fake LLM, real Postgres/Redis/Qdrant, real auth)
         env:
           API_KEY: ci-approver-key
         run: |
@@ -243,8 +246,8 @@ jobs:
           ann("notice", "retrieval eval (real embeddings)", "retrieval.txt")
           ann("notice", "guardrail eval", "guard.txt")
           ann("notice", "red-team eval", "redteam.txt")
-          ann("notice", "e2e smoke (fake Anthropic)", "smoke.txt")
-          ann("notice", "e2e UI (fake Anthropic)", "ui.txt")
+          ann("notice", "e2e smoke (fake LLM)", "smoke.txt")
+          ann("notice", "e2e UI (fake LLM)", "ui.txt")
           ann("notice", "concurrency smoke (20x, 100 requests)", "load.txt")
           ann("notice", "backup", "backup.txt")
           ann("notice", "restore verification", "restore.txt")
@@ -258,7 +261,7 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.ci.yml down -v
 
   # The production overlay, actually run: Caddy with TLS, multiple workers, Prometheus and
-  # Grafana. Uses the fake Anthropic server so it needs no key. Every claim the README makes
+  # Grafana. Uses the fake LLM server so it needs no key. Every claim the README makes
   # about the proxy and the metrics pipeline is asserted by scripts/prod_smoke.sh.
   prod-smoke:
     runs-on: ubuntu-latest
@@ -266,13 +269,16 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
-      - name: Configure env (production overlay, fake Anthropic)
+      - name: Configure env (production overlay, fake LLM)
         run: |
           HASH=$(docker run --rm caddy:2.8-alpine caddy hash-password --plaintext 'grafana-basic-pass')
           cp .env.example .env
           {
             echo "ANTHROPIC_API_KEY=ci-fake-key"
-            echo "ANTHROPIC_API_BASE=http://fake-anthropic:8099"
+            echo "ANTHROPIC_API_BASE=http://fake-llm:8099"
+            echo "LLM_MODEL=anthropic/ci-fake-model"
+            echo "JUDGE_MODEL=anthropic/ci-fake-model"
+            echo "GUARD_MODEL=anthropic/ci-fake-model"
             echo "RATE_LIMIT_PER_MIN=1000"
             echo "IP_RATE_LIMIT_PER_MIN=1000"
             echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"
@@ -346,9 +352,9 @@ jobs:
 
   # Real local model (Ollama), completely free -- no API key, no account, no credits.
   # GitHub Actions minutes are unlimited for public repos, so this costs nothing and runs
-  # on every push. A small CPU model is far weaker than Claude, so this only proves the
+  # on every push. A small CPU model is far weaker than a large one, so this only proves the
   # real LiteLLM/RAG/agent code path works end to end with a genuine model, not that
-  # answers are good -- the stack job's fake-Anthropic path already covers wiring and auth,
+  # answers are good -- the stack job's fake-LLM path already covers wiring and auth,
   # so auth is left off here (AUTH_REQUIRED=0) to keep this job's scope narrow and fast;
   # guardrails run on rules only too (GUARD_LLM=0), for the same reason.
   live-ollama:
@@ -519,143 +525,3 @@ jobs:
               t = t[-7000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               print(f"::notice title=RAGAS pooled result::{t}")
           PY
-
-  # Same stack against a real hosted LLM. Runs only when either ANTHROPIC_API_KEY or
-  # OPENROUTER_API_KEY exists as a repository secret (Settings > Secrets and variables >
-  # Actions). Anthropic is preferred if both are set; OpenRouter is a one-key alternative
-  # that proxies many providers/models, useful when you don't have a direct Anthropic key.
-  # Auth is on here too (same three bootstrapped test users as the stack job).
-  live:
-    runs-on: ubuntu-latest
-    needs: stack
-    if: github.event_name != 'pull_request'
-    timeout-minutes: 45
-    env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-    steps:
-      - id: key
-        run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then
-            echo "provider=anthropic" >> "$GITHUB_OUTPUT"
-          elif [ -n "$OPENROUTER_API_KEY" ]; then
-            echo "provider=openrouter" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::Neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY secret is set, skipping live LLM checks"
-            echo "provider=none" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/checkout@v5
-        if: steps.key.outputs.provider != 'none'
-      - name: Configure env (common - auth, chainlit, langfuse, eval build)
-        if: steps.key.outputs.provider != 'none'
-        run: |
-          {
-            echo "INSTALL_EVAL=1"
-            echo "AUTH_REQUIRED=1"
-            echo "BOOTSTRAP_API_KEYS=ci-approver:approver:ci-approver-key,ci-operator:operator:ci-operator-key,ci-admin:admin:ci-admin-key"
-            echo "CHAINLIT_AUTH_SECRET=ci-chainlit-secret"
-            echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"
-            echo "LANGFUSE_SALT=ci-langfuse-salt"
-          } >> ci-common.env
-      - name: Configure env (real Anthropic)
-        if: steps.key.outputs.provider == 'anthropic'
-        run: |
-          grep -v -e '^ANTHROPIC_API_KEY=' -e '^RATE_LIMIT_PER_MIN=' .env.example > .env
-          echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> .env
-          echo "RATE_LIMIT_PER_MIN=1000" >> .env
-          cat ci-common.env >> .env
-      - name: Configure env (OpenRouter)
-        if: steps.key.outputs.provider == 'openrouter'
-        run: |
-          grep -v -e '^OPENROUTER_API_KEY=' -e '^LLM_MODEL=' -e '^JUDGE_MODEL=' \
-                  -e '^GUARD_MODEL=' -e '^RATE_LIMIT_PER_MIN=' .env.example > .env
-          {
-            echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY"
-            # Model slugs as of this writing; update if OpenRouter's catalog changes.
-            # anthropic/claude-3-haiku was deprecated by OpenRouter on 2026-09-10;
-            # its own error message names anthropic/claude-haiku-4.5 as the replacement.
-            # claude-3.5-sonnet returned 404 "No endpoints found" (deprecated/removed from
-            # OpenRouter's catalog, discovered the same way the haiku one was above).
-            # claude-sonnet-5 is the current flagship Anthropic model as of this writing.
-            echo "LLM_MODEL=openrouter/anthropic/claude-sonnet-5"
-            echo "JUDGE_MODEL=openrouter/anthropic/claude-haiku-4.5"
-            echo "GUARD_MODEL=openrouter/anthropic/claude-haiku-4.5"
-            echo "RATE_LIMIT_PER_MIN=1000"
-          } >> .env
-          cat ci-common.env >> .env
-      - name: Start the stack
-        if: steps.key.outputs.provider != 'none'
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --wait --wait-timeout 420
-      - name: Ingest and seed
-        if: steps.key.outputs.provider != 'none'
-        run: |
-          docker compose exec -T api python -m scripts.ingest
-          docker compose exec -T api python -m scripts.seed_kpis
-      - name: Guardrail eval (with LLM classifier)
-        if: steps.key.outputs.provider != 'none'
-        run: |
-          set -o pipefail
-          docker compose exec -T api python -m evals.run_guard_eval --min-accuracy 0.9 2>&1 \
-            | grep -Ev "LiteLLM\.Info|Give Feedback" | tee guard.txt
-      - name: End-to-end smoke (real model)
-        if: steps.key.outputs.provider != 'none'
-        env:
-          API_KEY: ci-approver-key
-          OPERATOR_KEY: ci-operator-key
-          ADMIN_KEY: ci-admin-key
-        run: |
-          set -o pipefail
-          python scripts/e2e_smoke.py 2>&1 | tee smoke.txt
-      - name: End-to-end UI (real model)
-        if: steps.key.outputs.provider != 'none'
-        env:
-          UI_USER: ci-approver
-          UI_KEY: ci-approver-key
-          UI_OPERATOR_USER: ci-operator
-          UI_OPERATOR_KEY: ci-operator-key
-        run: |
-          pip install -q playwright
-          playwright install --with-deps chromium
-          set -o pipefail
-          python scripts/e2e_ui.py 2>&1 | tee ui.txt
-      - name: Generation eval (LLM judge, 30 answerable + unanswerable)
-        if: steps.key.outputs.provider != 'none'
-        run: |
-          docker compose exec -T api python -m evals.run_gen_eval --limit 30 --min-pass 0.7 --min-faithful 0.8 | tee gen.txt
-          { echo '### Generation eval (live)'; echo '```'; cat gen.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Concurrency smoke (real model)
-        if: steps.key.outputs.provider != 'none'
-        env:
-          API_KEY: ci-approver-key
-        run: |
-          pip install -q httpx
-          set -o pipefail
-          python scripts/load_test.py --concurrency 10 --total 30 --max-error-rate 0.1 --max-p95-s 60 2>&1 | tee load.txt
-      - name: Publish results as annotations
-        if: always() && steps.key.outputs.provider != 'none'
-        run: |
-          docker compose logs --no-color --tail 400 api > api.log 2>&1 || true
-          grep -E '\| *[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)[:.]' api.log | tail -30 > api_errors.txt || true
-          python3 - <<'PY'
-          import pathlib
-          def ann(level, title, path, limit=8000):
-              p = pathlib.Path(path)
-              if not p.exists():
-                  return
-              t = p.read_text(errors="replace")[-limit:]
-              t = t.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-              print(f"::{level} title={title}::{t}")
-          ann("notice", "guardrail eval (live model)", "guard.txt")
-          ann("notice", "e2e smoke (live model)", "smoke.txt")
-          ann("notice", "e2e UI (live model)", "ui.txt")
-          ann("notice", "generation eval (live model)", "gen.txt")
-          ann("notice", "concurrency smoke (live model)", "load.txt")
-          ann("error", "api container: extracted exception lines", "api_errors.txt")
-          ann("warning", "api container log (tail, live)", "api.log")
-          PY
-      - name: Container logs (on failure)
-        if: failure() && steps.key.outputs.provider != 'none'
-        run: docker compose logs --no-color --tail 200
-      - name: Tear down
-        if: always() && steps.key.outputs.provider != 'none'
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v

@@ -1,10 +1,9 @@
 """RAGAS evaluation: faithfulness, answer relevancy, context precision, context recall.
 
-Needs a real, reasonably capable judge model -- run this in a live-model context
-(the `live` CI job, or locally against a real ANTHROPIC_API_KEY/OPENROUTER_API_KEY), not
-against the fake Anthropic server (it would just be scoring the fake server's canned text)
-or the free Ollama model (too small to be a reliable judge; RAGAS's prompts expect
-consistent structured JSON back).
+Needs a real judge model, not the fake LLM server (it would just score the
+fake server's canned text). CI uses a local Ollama judge, which is small and noisy (RAGAS's
+prompts expect consistent structured JSON back), so read the scores as a comparison, not
+absolute quality.
 
   python -m evals.run_ragas [path] [--limit 20] [--min-faithfulness 0.7] ...
 
@@ -105,7 +104,7 @@ def build_llm_and_embeddings(request_timeout: int = 120):
     # here (this script only, not the app) means such a provider returns one completion
     # and RAGAS scores from that, instead of every relevancy row failing.
     litellm.drop_params = True
-    # No explicit temperature: some models (claude-sonnet-5) reject temperature=0, and
+    # No explicit temperature: some models (strict-temp-model) reject temperature=0, and
     # app/llm.py's retry-without-temperature workaround doesn't apply to this bare
     # LangChain wrapper, so it's simplest to just let the provider use its own default.
     chat = ChatLiteLLM(model=settings.llm_model, max_tokens=1024, max_retries=3,

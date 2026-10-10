@@ -43,7 +43,7 @@ def _timed(model: str, messages: list[dict], kw: dict):
 
 def _call(model: str, messages: list[dict], kw: dict):
     """Call litellm, dropping an unsupported `temperature` and retrying once.
-    Some Claude models (e.g. claude-sonnet-5) only accept temperature=1 and raise
+    Some models (e.g. strict-temp-model) only accept temperature=1 and raise
     litellm.UnsupportedParamsError for our default of 0."""
     kw.setdefault("num_retries", 3)  # litellm backs off on RateLimitError/5xx/timeouts
     try:
@@ -73,8 +73,8 @@ def _chat_raw(messages: list[dict], model: str | None = None, **kw):
     model = model or settings.llm_model
     kw = {**route(model), **kw}
     kw.setdefault("temperature", 0)
-    # A reasonable ceiling, not "however much the model allows": some providers (found via
-    # OpenRouter) preflight-check cost against max_tokens before the call even runs, and
+    # A reasonable ceiling, not "however much the model allows": some providers (hosted gateways)
+    # preflight-check cost against max_tokens before the call even runs, and
     # reject it if the account can't cover the model's full window even though actual usage
     # would be far smaller. Our answers are prose paragraphs, not long documents.
     kw.setdefault("max_tokens", 1024)
@@ -99,8 +99,8 @@ def _chat_raw(messages: list[dict], model: str | None = None, **kw):
 
 
 def chat(messages: list[dict], model: str | None = None, **kw) -> str:
-    """Single LLM entry point. Primary = hosted (Anthropic/OpenRouter); falls back to
-    local Ollama."""
+    """Single LLM entry point. Primary = LLM_MODEL (Ollama/vLLM); falls back to
+    the fallback model."""
     if MOCK:
         return MOCK_TEXT
     return _chat_raw(messages, model, **kw).choices[0].message.content

@@ -17,22 +17,22 @@ class _Resp:
 
 
 def test_drops_temperature_on_unsupported_params_error():
-    """Regression: litellm rejects temperature=0 for some Claude model strings
-    (e.g. claude-sonnet-5, which only accepts temperature=1)."""
+    """Regression: litellm rejects temperature=0 for some model strings
+    (e.g. strict-temp-model, which only accepts temperature=1)."""
     calls = []
 
     def fake_completion(model, messages, **kw):
         calls.append(dict(kw))
         if "temperature" in kw:
             raise litellm.exceptions.UnsupportedParamsError(
-                message="claude-sonnet-5 does not support temperature=0. "
+                message="strict-temp-model does not support temperature=0. "
                         "Only temperature=1 is supported.",
                 status_code=400,
             )
         return _Resp("ok")
 
     with patch("app.llm.litellm.completion", side_effect=fake_completion):
-        r = _complete("anthropic/claude-sonnet-5", [{"role": "user", "content": "hi"}],
+        r = _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}],
                       {"temperature": 0})
     assert r.choices[0].message.content == "ok"
     assert len(calls) == 2
@@ -46,7 +46,7 @@ def test_unrelated_unsupported_param_error_is_not_swallowed():
     with patch("app.llm.litellm.completion", side_effect=fake_completion), pytest.raises(
         litellm.exceptions.UnsupportedParamsError
     ):
-        _complete("anthropic/claude-sonnet-5", [{"role": "user", "content": "hi"}], {"top_k": 1})
+        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}], {"top_k": 1})
 
 
 def test_no_retry_when_temperature_not_set():
@@ -56,7 +56,7 @@ def test_no_retry_when_temperature_not_set():
     with patch("app.llm.litellm.completion", side_effect=fake_completion), pytest.raises(
         litellm.exceptions.UnsupportedParamsError
     ):
-        _complete("anthropic/claude-sonnet-5", [{"role": "user", "content": "hi"}], {})
+        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}], {})
 
 
 def test_chat_raises_primary_error_when_fallback_also_fails():
@@ -66,20 +66,20 @@ def test_chat_raises_primary_error_when_fallback_also_fails():
     from app import llm
 
     def fake_completion(model, messages, **kw):
-        if "sonnet" in model:
+        if "strict-temp" in model:
             raise ValueError("primary: invalid model string")
         raise ValueError("fallback: connection refused")
 
     with patch("app.llm.litellm.completion", side_effect=fake_completion), pytest.raises(
         ValueError, match="primary: invalid model string"
     ):
-        llm.chat([{"role": "user", "content": "hi"}], model="openrouter/x/claude-sonnet-5")
+        llm.chat([{"role": "user", "content": "hi"}], model="gateway/x/strict-temp-model")
 
 
 def test_complete_defaults_num_retries_for_transient_errors():
-    """OpenRouter (and other providers) rate-limit in short bursts; litellm's own
+    """Hosted providers rate-limit in short bursts; litellm's own
     num_retries handles backoff for RateLimitError/5xx/timeouts. Regression: found via a
-    live CI run hitting OpenRouter's new-account 20rpm cap with no retry at all."""
+    live CI run hitting a new-account rate cap with no retry at all."""
     from app.llm import _complete
 
     seen = {}
@@ -89,7 +89,7 @@ def test_complete_defaults_num_retries_for_transient_errors():
         return _Resp("ok")
 
     with patch("app.llm.litellm.completion", side_effect=fake_completion):
-        _complete("anthropic/claude-sonnet-5", [{"role": "user", "content": "hi"}], {})
+        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}], {})
     assert seen.get("num_retries") == 3
 
 
@@ -103,15 +103,15 @@ def test_complete_respects_explicit_num_retries():
         return _Resp("ok")
 
     with patch("app.llm.litellm.completion", side_effect=fake_completion):
-        _complete("anthropic/claude-sonnet-5", [{"role": "user", "content": "hi"}],
+        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}],
                   {"num_retries": 5})
     assert seen.get("num_retries") == 5
 
 
 def test_chat_defaults_a_reasonable_max_tokens():
-    """Regression: found via a live CI run against OpenRouter, which preflight-checks
+    """Regression: found via a live CI run against a hosted gateway, which preflight-checks
     cost against max_tokens and rejects the call if the account can't cover the model's
-    full window (65536 for claude-sonnet-5) even when actual usage would be tiny."""
+    full window (65536 for strict-temp-model) even when actual usage would be tiny."""
     from app import llm
 
     seen = {}
@@ -169,7 +169,7 @@ def test_route_sends_vllm_models_to_vllm(monkeypatch):
     r = llm.route("hosted_vllm/Qwen/Qwen2.5-7B-Instruct")
     assert r["api_base"] == llm.settings.vllm_base_url
     assert r["api_key"]  # never empty: the OpenAI SDK refuses an empty key
-    assert llm.route("anthropic/claude-sonnet-5") == {}
+    assert llm.route("anthropic/strict-temp-model") == {}
     assert llm.route("ollama/qwen2.5:7b-instruct") == {}
 
 
