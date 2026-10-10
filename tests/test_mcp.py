@@ -14,7 +14,7 @@ FAKE = StdioServerParameters(
 
 def test_real_server_exposes_only_read_tools():
     names = mcp_client.list_tools()
-    assert names == ["get_kpis", "kpi_profile", "search_runbooks"]
+    assert names == ["get_kpis", "kpi_profile", "search_runbooks", "ticket_history"]
     assert "create_ticket" not in names
 
 

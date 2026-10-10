@@ -87,6 +87,17 @@ def create_ticket(thread_id: str, alert: dict, diagnosis: str,
     return ticket
 
 
+def ticket_history(cell_id: str, limit: int = 5) -> list[dict]:
+    """Read-only: the most recent past tickets for a cell (newest first)."""
+    limit = max(1, min(int(limit), 10))
+    with get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT id, kpi, diagnosis, created_at, approved_by FROM tickets "
+            "WHERE cell_id = %s ORDER BY created_at DESC LIMIT %s", (cell_id, limit)).fetchall()
+    return [{"id": f"INC-{r[0]}", "kpi": r[1], "diagnosis": (r[2] or "")[:600],
+             "created_at": r[3].isoformat(), "approved_by": r[4]} for r in rows]
+
+
 def get_ticket(ticket_id: str) -> dict | None:
     """Look up a ticket by its external id (e.g. 'INC-42')."""
     try:

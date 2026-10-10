@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -67,11 +68,8 @@ def _complete(model: str, messages: list[dict], kw: dict):
         return _call(model, messages, kw)
 
 
-def chat(messages: list[dict], model: str | None = None, **kw) -> str:
-    """Single LLM entry point. Primary = hosted (Anthropic/OpenRouter); falls back to
-    local Ollama."""
-    if MOCK:
-        return MOCK_TEXT
+def _chat_raw(messages: list[dict], model: str | None = None, **kw):
+    """Primary model, then the local Ollama fallback; returns the litellm response."""
     model = model or settings.llm_model
     kw = {**route(model), **kw}
     kw.setdefault("temperature", 0)
@@ -81,7 +79,7 @@ def chat(messages: list[dict], model: str | None = None, **kw) -> str:
     # would be far smaller. Our answers are prose paragraphs, not long documents.
     kw.setdefault("max_tokens", 1024)
     try:
-        r = _timed(model, messages, kw)
+        return _timed(model, messages, kw)
     except Exception as primary_err:
         if model == settings.llm_fallback_model:
             raise
@@ -91,11 +89,39 @@ def chat(messages: list[dict], model: str | None = None, **kw) -> str:
             fb = settings.llm_fallback_model
             fb_kw = {k: v for k, v in kw.items() if k not in ("api_base", "api_key")}
             fb_kw.update(route(fb) or {"api_base": settings.ollama_base_url})
-            r = _timed(fb, messages, fb_kw)
+            return _timed(fb, messages, fb_kw)
         except Exception as fallback_err:
             # Re-raise the PRIMARY error: it's almost always the one that actually
             # needs fixing (bad model string, missing key, provider outage). The
             # fallback failing too (e.g. no local Ollama running) is expected in most
             # deployments and would otherwise mask the real problem.
             raise primary_err from fallback_err
-    return r.choices[0].message.content
+
+
+def chat(messages: list[dict], model: str | None = None, **kw) -> str:
+    """Single LLM entry point. Primary = hosted (Anthropic/OpenRouter); falls back to
+    local Ollama."""
+    if MOCK:
+        return MOCK_TEXT
+    return _chat_raw(messages, model, **kw).choices[0].message.content
+
+
+def chat_with_tools(messages: list[dict], tools: list[dict], model: str | None = None,
+                    **kw) -> dict:
+    """One tool-calling turn. `tools` are OpenAI-format function specs (litellm translates
+    them per provider). Returns {"content": str, "tool_calls": [{"id", "name", "arguments"}]}
+    where arguments is a dict, or None if the model produced unparseable JSON."""
+    if MOCK:
+        return {"content": MOCK_TEXT, "tool_calls": []}
+    if tools:
+        kw["tools"] = tools
+    msg = _chat_raw(messages, model, **kw).choices[0].message
+    calls = []
+    for tc in getattr(msg, "tool_calls", None) or []:
+        raw = tc.function.arguments
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+        except (ValueError, TypeError):
+            args = None
+        calls.append({"id": tc.id, "name": tc.function.name, "arguments": args})
+    return {"content": msg.content or "", "tool_calls": calls}

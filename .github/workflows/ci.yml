@@ -178,6 +178,7 @@ jobs:
           "
       - name: End-to-end smoke (real LiteLLM path via fake server, real auth)
         env:
+          EXPECT_AGENTIC: "1"  # the fake server emulates Anthropic tool_use for the investigator
           API_KEY: ci-approver-key
           OPERATOR_KEY: ci-operator-key
           ADMIN_KEY: ci-admin-key
@@ -389,6 +390,13 @@ jobs:
           docker compose exec -T ollama ollama pull qwen2.5:3b-instruct
           docker compose exec -T -e GUARD_MODEL=ollama_chat/qwen2.5:3b-instruct api \
             python -m evals.run_redteam --llm 2>&1 | grep -E '^\{|^MISS|^FALSE' | tee redteam_llm.txt
+      - name: Tool-selection accuracy of the investigation agent (two local models; measurement)
+        continue-on-error: true
+        run: |
+          for m in qwen2.5:1.5b-instruct qwen2.5:3b-instruct; do
+            echo "== $m"
+            docker compose exec -T api python -m evals.run_tool_eval --model ollama_chat/$m 2>&1 | grep -E '^\{|call failed' | tail -50
+          done 2>&1 | tee tool_eval.txt
       - name: Publish results as annotations
         if: always()
         run: |
@@ -405,6 +413,7 @@ jobs:
               print(f"::{level} title={title}::{t}")
           ann("notice", "e2e smoke (local Ollama)", "smoke.txt")
           ann("notice", "red-team with LLM classifier (qwen2.5:3b)", "redteam_llm.txt")
+          ann("notice", "tool-selection accuracy (local models)", "tool_eval.txt")
           ann("error", "api container: extracted exception lines", "api_errors.txt")
           ann("warning", "api container log (tail, ollama)", "api.log")
           PY

@@ -27,6 +27,12 @@ RATE_LIMITED = Counter("ratelimit_rejections_total", "Requests rejected by rate 
 AUTH_FAILURES = Counter("auth_failures_total", "Authentication/authorization failures", ["reason"])
 APPROVALS = Counter("approvals_total", "Incident decisions", ["decision"])
 TICKETS = Counter("tickets_created_total", "Tickets created")
+AGENT_TOOL_CALLS = Counter("agent_tool_calls_total", "Investigator tool calls",
+                           ["tool", "outcome"])
+AGENT_STEPS = Histogram("agent_investigation_steps", "Tool-calling steps per investigation",
+                        buckets=(0, 1, 2, 3, 4, 5, 6, 8, 10))
+AGENT_STOPS = Counter("agent_investigation_total", "Investigations by how they ended",
+                      ["reason"])  # done | step_limit | fallback
 
 # Quality signals for the running system (not just "is it up"):
 ANSWERS = Counter(

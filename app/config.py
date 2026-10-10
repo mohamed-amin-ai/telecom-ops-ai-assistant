@@ -16,6 +16,10 @@ class Settings:
     vllm_base_url: str = os.getenv("VLLM_BASE_URL", "http://vllm:8000/v1")
     vllm_api_key: str = os.getenv("VLLM_API_KEY", "")
 
+    # "agentic": the model chooses among read-only tools (bounded); "fixed": always KPI profile
+    # + runbook search. Writes (tickets) are never model-callable in either mode.
+    agent_mode: str = os.getenv("AGENT_MODE", "agentic")
+    agent_max_steps: int = int(os.getenv("AGENT_MAX_STEPS", "5"))  # tool calls per incident
     tools_via_mcp: bool = _flag("TOOLS_VIA_MCP", False)  # agent reads go through app/mcp_server.py
 
     qdrant_url: str = os.getenv("QDRANT_URL", "http://qdrant:6333")

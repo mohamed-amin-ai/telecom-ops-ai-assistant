@@ -103,6 +103,8 @@ def _shape(tid: str, out: dict) -> dict:
         "thread_id": tid,
         "status": "awaiting_approval" if out.get("__interrupt__") else "done",
         "profile": out.get("profile"),
+        "investigation": [{"tool": t.get("tool"), "outcome": t.get("outcome")}
+                          for t in out.get("trace") or []],  # which tools ran, not their data
         "diagnosis": out.get("diagnosis"),
         "ticket": out.get("ticket"),
         "report": out.get("report"),

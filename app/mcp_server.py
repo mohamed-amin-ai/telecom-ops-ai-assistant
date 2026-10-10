@@ -21,6 +21,12 @@ def kpi_profile(cell_id: str, kpi: str) -> dict:
 
 
 @mcp.tool()
+def ticket_history(cell_id: str, limit: int = 5) -> list[dict]:
+    """Most recent past incident tickets for a cell (newest first)."""
+    return tools.ticket_history(cell_id, limit)
+
+
+@mcp.tool()
 def search_runbooks(query: str, k: int = 5) -> list[dict]:
     """Hybrid search over runbooks and telecom docs."""
     return retrieve(query, k=k)

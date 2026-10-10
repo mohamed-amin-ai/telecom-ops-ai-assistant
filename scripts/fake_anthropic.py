@@ -16,8 +16,31 @@ def _text(x) -> str:
     return " ".join(b.get("text", "") for b in x if isinstance(b, dict))
 
 
+CELL = re.compile(r"'cell_id':\s*'([^']+)'")
+KPI = re.compile(r"'kpi':\s*'([^']+)'")
+
+
+def tool_turn(req: dict, first_user: str):
+    """Scripted tool use for the investigation agent: kpi_profile, search_runbooks,
+    ticket_history, then a text summary. Returns Anthropic content blocks."""
+    done = sum(1 for m in req.get("messages", []) if isinstance(m.get("content"), list)
+               for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result")
+    cell = (CELL.search(first_user) or [None, "CELL_001"])[1]
+    kpi = (KPI.search(first_user) or [None, "prb_utilization_pct"])[1]
+    plan = [("kpi_profile", {"cell_id": cell, "kpi": kpi}),
+            ("search_runbooks", {"query": f"{kpi.replace('_', ' ')} high utilization"}),
+            ("ticket_history", {"cell_id": cell})]
+    if done < len(plan):
+        name, args = plan[done]
+        return [{"type": "tool_use", "id": f"toolu_{done}", "name": name, "input": args}], "tool_use"
+    return [{"type": "text", "text": "Investigation summary: the KPI is abnormal; "
+                                     "runbook and history reviewed."}], "end_turn"
+
+
 def reply(system: str, user: str) -> str:
     low = user.lower()
+    if "investigation agent" in system:
+        return "Investigation summary: tool budget reached; evidence gathered so far reviewed."
     if system.startswith("You are an input filter"):
         label = ("off_topic" if any(w in low for w in OFF_TOPIC)
                  else "harmful" if any(w in low for w in HARMFUL) else "on_topic")
@@ -56,11 +79,17 @@ class Handler(BaseHTTPRequestHandler):
         system = _text(req.get("system", ""))
         users = [m for m in req.get("messages", []) if m.get("role") == "user"]
         user = _text(users[-1]["content"]) if users else ""
-        text = reply(system, user)
+        if req.get("tools") and "investigation agent" in system:
+            first = _text(users[0]["content"]) if users else ""
+            blocks, stop = tool_turn(req, first)
+            text = " ".join(b.get("text", "") for b in blocks)
+        else:
+            text, stop = reply(system, user), "end_turn"
+            blocks = [{"type": "text", "text": text}]
         self._send(200, {
             "id": "msg_fake", "type": "message", "role": "assistant",
-            "model": req.get("model", "fake"), "stop_reason": "end_turn", "stop_sequence": None,
-            "content": [{"type": "text", "text": text}],
+            "model": req.get("model", "fake"), "stop_reason": stop, "stop_sequence": None,
+            "content": blocks,
             "usage": {"input_tokens": max(1, len(user) // 4), "output_tokens": max(1, len(text) // 4)},
         })
 

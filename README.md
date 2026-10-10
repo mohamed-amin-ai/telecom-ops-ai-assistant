@@ -333,6 +333,36 @@ GPU memory fit for your model, first-start download time -- is untested.** Also 
 answer quality and the guardrail/RAGAS numbers for whichever model you pick; re-run the
 evals against it before trusting the existing tables, which are for other models.
 
+## Agentic investigation (tool calling)
+
+By default (`AGENT_MODE=agentic`) the model decides which read-only tools to call before diagnosing:
+`kpi_profile`, `get_kpis`, `search_runbooks`, `ticket_history` (the same tools the MCP server exposes;
+set `TOOLS_VIA_MCP=1` to route them through it). `AGENT_MODE=fixed` restores the old fixed pipeline.
+
+Safety properties (all covered by `tests/test_investigator.py`):
+- Step limit: `AGENT_MAX_STEPS` (default 5); at the limit the model gets one final no-tools turn.
+- Arguments are validated and clamped; unknown tools are rejected and never executed.
+- `create_ticket` is not model-callable. A ticket is only created after the human approval `interrupt`.
+- Duplicate calls are short-circuited, observations are size-capped.
+- If the model skips the minimum evidence (KPI profile, runbook), a deterministic safety net fetches it; if tool calling fails, the flow falls back to the fixed pipeline. `/incident` returns an `investigation` list showing each tool and its outcome (`ok`, `safety_net`, ...).
+- Metrics: `agent_tool_calls`, `agent_steps`, `agent_stops{done|step_limit|fallback|no_tools}`.
+
+### Tool-selection eval (`python -m evals.run_tool_eval --model <model>`)
+43 author-written scenarios (alert triage, anomaly check, raw series, history, knowledge, write requests,
+no-tool). Measures first-tool correctness, argument correctness, never-write, and valid calls, with Wilson 95% CIs.
+Measured in CI (non-gating) on small local models:
+
+| model | first tool | args | no write | valid calls |
+|---|---|---|---|---|
+| qwen2.5:1.5b | 76.7% (62-87) | 90.9% (n=22) | 100% | 97.7% |
+| qwen2.5:3b | 60.5% (46-74) | 100% (n=13) | 100% | 100% |
+
+Both models never attempted a write. The 3B model always opens alert triage with `get_kpis` instead of
+`kpi_profile` (0/11), so it is *worse* than 1.5B on triage; the safety net exists for exactly this.
+Caveats: the scenarios are mine, the sample is small, and these are regression/comparison numbers, not production accuracy.
+Real tool calling was exercised end to end only against a fake Anthropic `tool_use` server (full stack in CI)
+and local Ollama models. It has not been measured on real Claude or a vLLM-served model.
+
 ## Layout
 - `app/rag.py`: ingest (with ingest-time injection scanning) and hybrid retrieval (Qdrant
   dense + BM25, RRF, optional rerank)

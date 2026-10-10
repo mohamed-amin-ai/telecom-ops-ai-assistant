@@ -90,6 +90,13 @@ for cell, kpi in [("CELL_001", "prb_utilization_pct"), ("CELL_002", "rrc_setup_s
     s, r = incident(cell, kpi, "synthetic fault")
     ok = s == 200 and r.get("status") == "awaiting_approval" and (r.get("profile") or {}).get("anomalous") is True
     check(f"{cell}/{kpi} flagged anomalous, awaiting approval", ok, (s, r))
+    if s == 200 and os.getenv("EXPECT_AGENTIC") == "1":
+        tools_ok = {(t["tool"], t["outcome"]) for t in r.get("investigation", [])}
+        check(f"{cell}: the model chose tools through tool calling (kpi_profile, search_runbooks, "
+              "ticket_history all ran, none via the safety net)",
+              {("kpi_profile", "ok"), ("search_runbooks", "ok"), ("ticket_history", "ok")}
+              <= tools_ok and not any(o == "safety_net" for _, o in tools_ok),
+              r.get("investigation"))
     if s == 200 and cell == "CELL_001":
         if OPERATOR_KEY:
             s0, r0 = call("POST", f"{API}/incident/{r['thread_id']}/decision", {"approve": True},
