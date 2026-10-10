@@ -29,7 +29,7 @@ cp .env.example .env
 # to start any of these missing -- that's deliberate, not a bug).
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 docker compose exec api python -m scripts.ingest      # index data/docs
-docker compose exec api python -m scripts.seed_kpis   # synthetic KPIs with 3 injected faults
+docker compose exec api python -m scripts.seed_kpis   # synthetic KPIs (realistic shape) with 3 injected faults
 ```
 Migrations (`db/migrations/*.sql`, LangGraph's checkpoint tables, `BOOTSTRAP_API_KEYS`) run
 automatically via a one-shot `migrate` service before `api` starts; re-run any time with
@@ -182,7 +182,16 @@ under real load, a real model's latency, or against a real database under write 
 the closest public sets are client-side UE traces (e.g. the Irish 5G trace dataset, GPL-3.0, RSRP/SNR/throughput),
 which do not have this schema, so none is bundled. To use a real export from your OSS/PM system:
 `python -m scripts.import_kpis export.csv` (long format) or `--wide --kpi-cols ... --rename "Vendor Name=kpi"`.
-The seed below stays the default demo data.
+The seed below stays the default demo data. It is synthetic but shaped like real traffic: two daily busy hours, a night trough,
+a small weekend dip, per-cell load character, autocorrelated noise, load-coupled success rates, missing samples and benign
+blips. `tests/test_seed_kpis.py` checks, for every weekday, several run times and 3 seeds, that exactly the 3 injected
+faults are flagged and nothing else. (A +30 spike on a cell already near 100% PRB would saturate; CELL_001 is kept at ~65% peak
+so the fault stays visible.)
+
+**Runbooks 23-27** are marked `STANDARDS-DERIVED`: written from the named 3GPP specs (RRC timers and
+procedures, NAS reject causes, PRB counters, self-healing) with a "Standards references" section, but
+written from my knowledge of the specs, not checked clause by clause. Thresholds in them are examples.
+Runbooks 01-22 remain synthetic.
 `python -m scripts.ingest_kpis data.csv` (long format: `ts,cell_id,kpi,value`) or
 `--wide` (`ts,cell_id,<kpi_1>,<kpi_2>,...`). Idempotent (a unique index means re-loading the
 same file inserts nothing new); malformed rows are counted and skipped, not fatal.
