@@ -56,3 +56,25 @@ def test_default_server_passes_environment_through():
     # Without this the spawned server loses DATABASE_URL/QDRANT_URL (found in CI).
     assert mcp_client.DEFAULT_SERVER.env is not None
     assert "PATH" in mcp_client.DEFAULT_SERVER.env
+
+
+def test_session_is_reused_and_replaced_after_death():
+    mcp_client.close_all()
+    s = mcp_client._session(FAKE)
+    mcp_client.call_tool("kpi_profile", {"cell_id": "a", "kpi": "k"}, FAKE)
+    t1 = s._thread
+    mcp_client.call_tool("kpi_profile", {"cell_id": "b", "kpi": "k"}, FAKE)
+    assert s._thread is t1 and s.alive()          # one process for both calls
+    s._loop.call_soon_threadsafe(s._stop.set)     # kill the transport under it
+    t1.join(5)
+    assert mcp_client.call_tool("kpi_profile", {"cell_id": "c", "kpi": "k"}, FAKE)["cell_id"] == "c"
+    assert s._thread is not t1
+
+
+def test_concurrent_callers_are_safe():
+    from concurrent.futures import ThreadPoolExecutor
+    mcp_client.close_all()
+    with ThreadPoolExecutor(8) as ex:
+        out = list(ex.map(lambda i: mcp_client.call_tool(
+            "kpi_profile", {"cell_id": f"c{i}", "kpi": "k"}, FAKE)["cell_id"], range(24)))
+    assert out == [f"c{i}" for i in range(24)]

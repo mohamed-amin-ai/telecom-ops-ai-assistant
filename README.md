@@ -349,7 +349,7 @@ evals against it before trusting the existing tables, which are for other models
 
 By default (`AGENT_MODE=agentic`) the model decides which read-only tools to call before diagnosing:
 `kpi_profile`, `get_kpis`, `search_runbooks`, `ticket_history` (the same tools the MCP server exposes;
-set `TOOLS_VIA_MCP=1` to route them through it). `AGENT_MODE=fixed` restores the old fixed pipeline.
+reads go through it by default, set `TOOLS_VIA_MCP=0` to call them in-process). `AGENT_MODE=fixed` restores the old fixed pipeline.
 
 Safety properties (all covered by `tests/test_investigator.py`):
 - Step limit: `AGENT_MAX_STEPS` (default 5); at the limit the model gets one final no-tools turn.
@@ -471,10 +471,12 @@ missing, roughly in order of what would bite first:
   red-team engagement, and attack detection on unseen phrasings is about 70% with the LLM layer and under 30% with
   rules alone -- see Red team above for what those numbers do and don't mean.
 - **The runbooks and KPI data are synthetic**, so every eval score is close to ceiling and
-  says more about the pipeline than about real-world quality. `scripts/ingest_kpis.py` can
+  says more about the pipeline than about real-world quality. `scripts/import_kpis.py` can
   load real KPI exports; the runbooks still need replacing with real ones.
-- **MCP is optional, not the default path.** With `TOOLS_VIA_MCP=1` the agent's KPI and
-  runbook reads go through the real MCP server over stdio (tested: tool list is read-only,
-  results round-trip, errors surface, works from inside an event loop). It spawns the
-  server per call, which costs latency, so it is off by default, and the stdio path has
-  not been run against a live Qdrant/Postgres here.
+- **MCP is the default path for the agent's reads** (`TOOLS_VIA_MCP=0` turns it off). One long-lived
+  server process per API worker is reused for every call (measured with a stub server: ~1.7 ms warm vs
+  ~585 ms when a process was started per call; the real server adds its own first-call cost for imports and
+  the embedding model). Costs: a second copy of the embedding model in memory per worker, and calls on one
+  worker share a single pipe (tool calls are short DB/Qdrant reads, but this is a throughput ceiling I have
+  not load-tested). Covered by tests (read-only tool list, round trips, errors, reuse, restart after the
+  server dies, concurrent callers) and by CI against the real Postgres/Qdrant.
