@@ -33,6 +33,12 @@ jobs:
           docker run --rm -e DOMAIN=localhost -e GRAFANA_BASIC_HASH='$2a$14$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123' \
             -v "$PWD/ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.8-alpine caddy validate --config /etc/caddy/Caddyfile
 
+      - name: vLLM compose overlay merges and validates (no GPU needed for config)
+        run: |
+          cp .env.example .env
+          VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct VLLM_API_KEY=ci \
+            docker compose --env-file .env -f docker-compose.yml -f docker-compose.vllm.yml config --services | grep -x vllm
+
   # Full compose stack: real Qdrant, TimescaleDB, Redis, Langfuse, real embeddings, the real
   # agent graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing,
   # judge JSON parsing) against a fake Anthropic server. This is not LLM_MOCK: it exercises

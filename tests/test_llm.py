@@ -161,3 +161,45 @@ def test_import_error_without_tracing_is_not_swallowed(monkeypatch):
     monkeypatch.setattr(litellm, "failure_callback", [])
     with patch("litellm.completion", side_effect=ImportError("boom")), pytest.raises(ImportError):
         _complete("m", [{"role": "user", "content": "x"}], {})
+
+
+def test_route_sends_vllm_models_to_vllm(monkeypatch):
+    from app import llm
+    monkeypatch.setattr(llm.settings.__class__, "vllm_base_url", "http://v:8000/v1", raising=False)
+    r = llm.route("hosted_vllm/Qwen/Qwen2.5-7B-Instruct")
+    assert r["api_base"] == llm.settings.vllm_base_url
+    assert r["api_key"]  # never empty: the OpenAI SDK refuses an empty key
+    assert llm.route("anthropic/claude-sonnet-5") == {}
+    assert llm.route("ollama/qwen2.5:7b-instruct") == {}
+
+
+def test_chat_passes_vllm_base_url_and_key():
+    from app import llm
+    seen = {}
+
+    def fake(**kw):
+        seen.update(kw)
+        return _Resp("hi")
+
+    with patch("litellm.completion", side_effect=fake):
+        out = llm.chat([{"role": "user", "content": "x"}], model="hosted_vllm/m")
+    assert out == "hi"
+    assert seen["api_base"] == llm.settings.vllm_base_url and seen["api_key"]
+
+
+def test_fallback_to_ollama_does_not_inherit_vllm_connection(monkeypatch):
+    from app import llm
+    monkeypatch.setattr(llm, "MOCK", False)
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw)
+        if kw["model"].startswith("hosted_vllm/"):
+            raise RuntimeError("vllm down")
+        return _Resp("fallback")
+
+    with patch("litellm.completion", side_effect=fake):
+        out = llm.chat([{"role": "user", "content": "x"}], model="hosted_vllm/m")
+    assert out == "fallback"
+    assert calls[-1]["api_base"] == llm.settings.ollama_base_url
+    assert "api_key" not in calls[-1]

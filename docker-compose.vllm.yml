@@ -1,0 +1,49 @@
+# Self-hosted LLM via vLLM (OpenAI-compatible server). Needs an NVIDIA GPU + the NVIDIA
+# container toolkit; GitHub-hosted CI runners have no GPU, so CI cannot run this overlay.
+#   docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d --build
+# (add -f docker-compose.prod.yml before this file for the production stack)
+#
+# Set in .env:
+#   VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct      # any HF model vLLM supports (gated models need HF_TOKEN)
+#   VLLM_API_KEY=<random string>             # required: vLLM rejects requests without it
+#   LLM_MODEL=hosted_vllm/Qwen/Qwen2.5-7B-Instruct   # "hosted_vllm/" + VLLM_MODEL
+# JUDGE_MODEL / GUARD_MODEL can point at the same model (or at a hosted one).
+services:
+  vllm:
+    image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-v0.11.0}
+    restart: unless-stopped
+    command:
+      - --model=${VLLM_MODEL:?set VLLM_MODEL in .env}
+      - --served-model-name=${VLLM_MODEL}
+      - --api-key=${VLLM_API_KEY:?set VLLM_API_KEY in .env}
+      - --max-model-len=${VLLM_MAX_MODEL_LEN:-8192}
+      - --gpu-memory-utilization=${VLLM_GPU_UTIL:-0.90}
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    volumes: [hf_cache:/root/.cache/huggingface]
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPUS:-1}
+              capabilities: [gpu]
+    healthcheck:
+      # /health answers once the weights are loaded; first start downloads the model.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+      start_period: 300s
+
+  api:
+    depends_on:
+      vllm:
+        condition: service_healthy
+    environment:
+      VLLM_BASE_URL: http://vllm:8000/v1
+      VLLM_API_KEY: ${VLLM_API_KEY}
+
+volumes:
+  hf_cache:

@@ -98,6 +98,8 @@ def build_llm_and_embeddings(request_timeout: int = 120):
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
 
+    from app.llm import route
+
     # ResponseRelevancy requests several completions per call (n=strictness); Ollama doesn't
     # support `n`, and litellm raises instead of ignoring it. Dropping unsupported params
     # here (this script only, not the app) means such a provider returns one completion
@@ -107,6 +109,7 @@ def build_llm_and_embeddings(request_timeout: int = 120):
     # app/llm.py's retry-without-temperature workaround doesn't apply to this bare
     # LangChain wrapper, so it's simplest to just let the provider use its own default.
     chat = ChatLiteLLM(model=settings.llm_model, max_tokens=1024, max_retries=3,
+                       **route(settings.llm_model),
                        request_timeout=request_timeout)
     llm = LangchainLLMWrapper(chat)
     embeddings = LangchainEmbeddingsWrapper(

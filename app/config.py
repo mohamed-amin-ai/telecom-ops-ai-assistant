@@ -11,6 +11,10 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-5")
     llm_fallback_model: str = os.getenv("LLM_FALLBACK_MODEL", "ollama/qwen2.5:7b-instruct")
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    # Self-hosted vLLM (OpenAI-compatible server). Use model strings "hosted_vllm/<served-model>"
+    # for LLM_MODEL / LLM_FALLBACK_MODEL / JUDGE_MODEL / GUARD_MODEL.
+    vllm_base_url: str = os.getenv("VLLM_BASE_URL", "http://vllm:8000/v1")
+    vllm_api_key: str = os.getenv("VLLM_API_KEY", "")
 
     qdrant_url: str = os.getenv("QDRANT_URL", "http://qdrant:6333")
     collection: str = os.getenv("QDRANT_COLLECTION", "telecom_docs")

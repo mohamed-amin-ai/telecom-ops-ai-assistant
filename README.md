@@ -230,6 +230,23 @@ number can't separate pipeline from model. It is not evidence about Claude-quali
 answers, which has never been measured here. There is no CI gate on these scores yet; the
 point of recording them is a baseline to beat, not a pass mark.
 
+## Self-hosted LLM with vLLM
+Any model string `hosted_vllm/<served-model>` (for `LLM_MODEL`, `LLM_FALLBACK_MODEL`,
+`JUDGE_MODEL`, `GUARD_MODEL`) is routed by `app/llm.py` to `VLLM_BASE_URL` with
+`VLLM_API_KEY`; everything else (retries, Prometheus metrics, Langfuse tracing, Ollama
+fallback) is unchanged, and RAGAS uses the same routing. To run the server:
+
+```bash
+# .env: VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct  VLLM_API_KEY=<random>  LLM_MODEL=hosted_vllm/Qwen/Qwen2.5-7B-Instruct
+docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d --build
+```
+Needs an NVIDIA GPU and the NVIDIA container toolkit. **Status: the routing is unit-tested
+and the overlay's config is validated in CI, but I have not run a vLLM server (no GPU
+here, and GitHub-hosted runners have none), so the container itself -- image tag, flags,
+GPU memory fit for your model, first-start download time -- is untested.** Also unmeasured:
+answer quality and the guardrail/RAGAS numbers for whichever model you pick; re-run the
+evals against it before trusting the existing tables, which are for other models.
+
 ## Layout
 - `app/rag.py`: ingest (with ingest-time injection scanning) and hybrid retrieval (Qdrant
   dense + BM25, RRF, optional rerank)
