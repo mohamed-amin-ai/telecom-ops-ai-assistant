@@ -48,7 +48,7 @@ jobs:
       run:
         shell: bash  # GitHub's explicit bash adds pipefail, so `cmd | tee` can fail the step
     needs: test
-    timeout-minutes: 60
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -71,6 +71,22 @@ jobs:
       - name: Check the corpus is searchable
         env: {QDRANT_URL: "http://localhost:6333"}
         run: python -m scripts.check_3gpp 2>&1 | tee check.txt
+      - name: Local model for question generation (free; small, so questions are noisy)
+        run: |
+          docker run -d --name ollama -p 11434:11434 ollama/ollama:0.5.7
+          for i in $(seq 1 30); do curl -sf localhost:11434/api/tags >/dev/null && break; sleep 2; done
+          docker exec ollama ollama pull qwen2.5:3b-instruct
+      - name: Build the chunk-level 3GPP question set from the indexed corpus
+        env:
+          QDRANT_URL: "http://localhost:6333"
+          LLM_MODEL: ollama_chat/qwen2.5:3b-instruct
+          LLM_FALLBACK_MODEL: ollama_chat/qwen2.5:3b-instruct
+          OLLAMA_API_BASE: "http://localhost:11434"
+          LLM_MOCK: "0"
+        run: python -m evals.build_3gpp_set --n 60 --per-spec 10 --out golden_3gpp.jsonl 2>&1 | tee build_set.txt
+      - name: Retrieval eval on 3GPP (chunk-level; dense vs hybrid vs hybrid+rerank)
+        env: {QDRANT_URL: "http://localhost:6333"}
+        run: python -m evals.run_3gpp_eval --set golden_3gpp.jsonl --k 5 2>&1 | tee eval3gpp.txt
       - name: Summary
         if: always()
         run: |
@@ -79,7 +95,7 @@ jobs:
           def ann(level, title, text):
               text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               print(f"::{level} title={title}::{text}")
-          for f, t in (("fetch.txt", "3GPP download"), ("ingest.txt", "ingest"), ("check.txt", "corpus checks")):
+          for f, t in (("fetch.txt", "3GPP download"), ("ingest.txt", "ingest"), ("check.txt", "corpus checks"), ("build_set.txt", "3GPP question set"), ("eval3gpp.txt", "3GPP retrieval eval")):
               p = pathlib.Path(f)
               if p.exists():
                   lines = p.read_text().splitlines()
@@ -94,6 +110,9 @@ jobs:
             fetch.txt
             ingest.txt
             check.txt
+            golden_3gpp.jsonl
+            build_set.txt
+            eval3gpp.txt
 
   # Full compose stack: real Qdrant, TimescaleDB, Redis, Langfuse, real embeddings, the real
   # agent graph, and the real LiteLLM code path (config, retries, guardrail JSON parsing,
