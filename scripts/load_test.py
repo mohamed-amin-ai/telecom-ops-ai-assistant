@@ -63,17 +63,56 @@ async def run(url: str, concurrency: int, total: int) -> dict:
     }
 
 
+async def run_open_loop(url: str, rps: float, duration: float) -> dict:
+    """Open-loop soak: start a request every 1/rps seconds regardless of how slow earlier ones
+    are. A closed loop (above) slows its own arrivals when the server slows down and so hides
+    queueing ("coordinated omission"); this one does not. Errors split into 429 (our own rate
+    limit answering correctly) and real failures (5xx / timeouts / connection errors)."""
+    n = int(rps * duration)
+    start = time.perf_counter()
+    async with httpx.AsyncClient(limits=httpx.Limits(max_connections=1000)) as client:
+        tasks = []
+        for i in range(n):
+            delay = start + i / rps - time.perf_counter()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            tasks.append(asyncio.create_task(one_request(client, url, i)))
+        results = await asyncio.gather(*tasks)
+    lat = sorted(r[0] for r in results)
+    codes = [r[1] for r in results]
+
+    def pct(p: float) -> float:
+        return round(lat[min(len(lat) - 1, int(len(lat) * p))], 3)
+
+    return {
+        "mode": "open-loop", "rps": rps, "duration_s": duration, "total": n,
+        "ok": codes.count(200), "rate_limited_429": codes.count(429),
+        "failed": sum(1 for c in codes if c not in (200, 429)),
+        "failure_rate": round(sum(1 for c in codes if c not in (200, 429)) / max(n, 1), 3),
+        "p50_s": pct(0.5), "p95_s": pct(0.95), "p99_s": pct(0.99), "max_s": round(lat[-1], 3),
+    }
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://localhost:8000")
     ap.add_argument("--concurrency", type=int, default=20)
     ap.add_argument("--total", type=int, default=100)
+    ap.add_argument("--rps", type=float, default=0, help="open-loop soak: requests/second")
+    ap.add_argument("--duration", type=float, default=60, help="open-loop soak seconds")
     ap.add_argument("--max-error-rate", type=float, default=0.05)
     ap.add_argument("--max-p95-s", type=float, default=30.0)
     a = ap.parse_args()
 
-    result = asyncio.run(run(a.url, a.concurrency, a.total))
     import json
+    if a.rps:
+        result = asyncio.run(run_open_loop(a.url, a.rps, a.duration))
+        print(json.dumps(result))
+        if result["failure_rate"] > a.max_error_rate or result["p95_s"] > a.max_p95_s:
+            print("BELOW FLOOR")
+            sys.exit(1)
+        sys.exit(0)
+    result = asyncio.run(run(a.url, a.concurrency, a.total))
     print(json.dumps(result))
 
     if result["error_rate"] > a.max_error_rate:

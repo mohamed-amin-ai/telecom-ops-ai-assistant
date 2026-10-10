@@ -318,15 +318,27 @@ missing, roughly in order of what would bite first:
 - **The webhook and Sentry scrubbing are tested against a local receiver I wrote, not a
   real ITSM system or Sentry account** -- the signature/retry/redaction logic is verified,
   the integration with a specific real vendor is not.
-- **Grafana has no auth beyond one admin password** and isn't behind the org's own SSO --
-  put it behind a VPN or proxy before exposing it further.
+- **Grafana SSO is configured but untested.** It sits behind Caddy basic auth plus its own
+  login, and the prod overlay has optional OIDC settings (`GRAFANA_OIDC_*`) for Okta/Entra/
+  Keycloak/etc.; I could not test them without an identity provider.
 - **No secrets manager** (Vault, cloud KMS): secrets are environment variables, optionally
   sourced from mounted files via `scripts/entrypoint.sh` -- no rotation built in.
-- **No real load test**: `scripts/load_test.py` is a smoke test against a fake LLM and
-  stubbed retrieval, not production-shaped traffic, real embeddings latency, or real model
-  latency together, and not sustained (a k6/Locust soak test is a different exercise).
-- **No autoscaling or rolling-deploy/rollback story**; `API_WORKERS` is a fixed count on one
-  host.
+- **Load testing is still against a fake LLM and the CI runner.** `scripts/load_test.py`
+  now has an open-loop soak mode (`--rps N --duration S`, fixed arrival rate, so slow
+  responses show up as queueing instead of being hidden) and CI runs 60 s at 5 req/s, but
+  that is one small runner with stubbed model latency -- not production-shaped traffic,
+  real model latency, or hours-long soak. Run `--rps` against your own deployment with your
+  real model to get numbers that mean something.
+- **Deploys restart the API (a few seconds of downtime) and there is one host.**
+  `scripts/deploy.sh <tag>` builds a tagged image, runs migrations, starts it, waits for
+  `/ready`, and rolls back to the previous tag automatically if it never becomes healthy
+  (`--rollback` does it by hand; the control flow is tested against a fake `docker
+  compose`, not real containers). Migrations are forward-only: a rollback does not undo a
+  schema change, so write migrations that the previous version can still run against.
+  No autoscaling, no multi-host, no zero-downtime.
+- **Third-party images are pinned** (`QDRANT_TAG`, `TIMESCALE_TAG`, ... in the compose files)
+  instead of `:latest`, so a rebuild can't silently change versions; bumping them is now a
+  deliberate edit that CI exercises. Langfuse is pinned to its `:2` major only.
 - **Quality with a real frontier model (Claude) has never been measured end to end.** The
   paid `live` CI job needs a funded key, which this repo's owner doesn't have, so with no
   secret set it skips. Everything model-dependent that has been measured used a local 3B
@@ -340,5 +352,8 @@ missing, roughly in order of what would bite first:
 - **The runbooks and KPI data are synthetic**, so every eval score is close to ceiling and
   says more about the pipeline than about real-world quality. `scripts/ingest_kpis.py` can
   load real KPI exports; the runbooks still need replacing with real ones.
-- **MCP wiring**: the server exists (`app/mcp_server.py`) but the agent calls tool functions
-  directly, not through it -- it's unused surface area for now.
+- **MCP is optional, not the default path.** With `TOOLS_VIA_MCP=1` the agent's KPI and
+  runbook reads go through the real MCP server over stdio (tested: tool list is read-only,
+  results round-trip, errors surface, works from inside an event loop). It spawns the
+  server per call, which costs latency, so it is off by default, and the stdio path has
+  not been run against a live Qdrant/Postgres here.

@@ -6,12 +6,12 @@
 #              docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:${QDRANT_TAG:-v1.13.6}
     restart: unless-stopped
     volumes: [qdrant_data:/qdrant/storage]
 
   timescale:
-    image: timescale/timescaledb:latest-pg16
+    image: timescale/timescaledb:${TIMESCALE_TAG:-2.17.2-pg16}
     restart: unless-stopped
     environment:
       POSTGRES_USER: telecom
@@ -26,7 +26,7 @@ services:
       retries: 20
 
   redis:
-    image: redis:7-alpine
+    image: redis:${REDIS_TAG:-7.4.2-alpine}
     restart: unless-stopped
     volumes: [redis_data:/data]
     healthcheck:
@@ -36,7 +36,7 @@ services:
       retries: 20
 
   langfuse-db:
-    image: postgres:16
+    image: postgres:${LANGFUSE_DB_TAG:-16.6}
     restart: unless-stopped
     environment:
       POSTGRES_USER: langfuse
@@ -62,7 +62,7 @@ services:
       SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env}
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:${OLLAMA_TAG:-0.5.7}
     restart: unless-stopped
     # docker compose --profile local up
     profiles: ["local"]
@@ -73,6 +73,7 @@ services:
   #   docker compose run --rm migrate
   migrate:
     build: .
+    image: telecom-ops:${APP_TAG:-local}
     env_file: .env
     depends_on:
       timescale:
@@ -81,6 +82,7 @@ services:
     restart: "no"
 
   api:
+    image: telecom-ops-api:${APP_TAG:-local}
     build:
       context: .
       args:
@@ -112,6 +114,7 @@ services:
 
   ui:
     build: .
+    image: telecom-ops:${APP_TAG:-local}
     restart: unless-stopped
     depends_on:
       api:

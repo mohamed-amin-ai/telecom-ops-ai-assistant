@@ -29,7 +29,7 @@ services:
         limits: {memory: 2g}
 
   proxy:
-    image: caddy:2-alpine
+    image: caddy:${CADDY_TAG:-2.8-alpine}
     restart: unless-stopped
     depends_on: [api, ui]
     environment:
@@ -44,7 +44,7 @@ services:
       - caddy_config:/config
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:${PROMETHEUS_TAG:-v2.55.1}
     restart: unless-stopped
     volumes:
       - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -53,7 +53,7 @@ services:
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:${GRAFANA_TAG:-11.3.0}
     restart: unless-stopped
     depends_on: [prometheus]
     # Not published to the host: reachable only through Caddy at /grafana/ (basic auth).
@@ -62,6 +62,21 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_ROOT_URL: https://${DOMAIN}/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Optional SSO via any OIDC provider (Okta, Entra ID, Keycloak, Google...). Off unless
+      # GRAFANA_OIDC_CLIENT_ID is set. With it on, set GRAFANA_OIDC_ROLE_ATTR so that only
+      # the right group gets Admin/Editor. Not tested against a real identity provider.
+      GF_AUTH_GENERIC_OAUTH_ENABLED: ${GRAFANA_OIDC_ENABLED:-false}
+      GF_AUTH_GENERIC_OAUTH_NAME: ${GRAFANA_OIDC_NAME:-SSO}
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: ${GRAFANA_OIDC_CLIENT_ID:-}
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: ${GRAFANA_OIDC_CLIENT_SECRET:-}
+      GF_AUTH_GENERIC_OAUTH_SCOPES: ${GRAFANA_OIDC_SCOPES:-openid email profile groups}
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: ${GRAFANA_OIDC_AUTH_URL:-}
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: ${GRAFANA_OIDC_TOKEN_URL:-}
+      GF_AUTH_GENERIC_OAUTH_API_URL: ${GRAFANA_OIDC_API_URL:-}
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: ${GRAFANA_OIDC_ROLE_ATTR:-}
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/grafana/dashboards:/etc/grafana/dashboards:ro

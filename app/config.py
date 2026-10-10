@@ -16,6 +16,8 @@ class Settings:
     vllm_base_url: str = os.getenv("VLLM_BASE_URL", "http://vllm:8000/v1")
     vllm_api_key: str = os.getenv("VLLM_API_KEY", "")
 
+    tools_via_mcp: bool = _flag("TOOLS_VIA_MCP", False)  # agent reads go through app/mcp_server.py
+
     qdrant_url: str = os.getenv("QDRANT_URL", "http://qdrant:6333")
     collection: str = os.getenv("QDRANT_COLLECTION", "telecom_docs")
     dense_model: str = os.getenv("DENSE_MODEL", "BAAI/bge-small-en-v1.5")

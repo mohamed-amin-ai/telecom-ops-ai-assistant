@@ -26,12 +26,19 @@ class State(TypedDict, total=False):
 
 def kpi_node(s: State) -> dict:
     a = s["alert"]
+    if settings.tools_via_mcp:
+        from .mcp_client import call_tool
+        return {"profile": call_tool("kpi_profile", {"cell_id": a["cell_id"], "kpi": a["kpi"]})}
     return {"profile": tools.kpi_profile(a["cell_id"], a["kpi"])}
 
 
 def runbook_node(s: State) -> dict:
     a = s["alert"]
-    return {"runbook": retrieve(f"{a['kpi']} {a.get('description', '')}")}
+    q = f"{a['kpi']} {a.get('description', '')}"
+    if settings.tools_via_mcp:
+        from .mcp_client import call_tool
+        return {"runbook": call_tool("search_runbooks", {"query": q})}
+    return {"runbook": retrieve(q)}
 
 
 def diagnose_node(s: State) -> dict:

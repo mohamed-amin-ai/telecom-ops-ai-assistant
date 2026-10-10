@@ -1,0 +1,8 @@
+# CI only: lets the deploy/rollback test produce a tag that never becomes healthy.
+services:
+  api:
+    environment:
+      APP_TAG: ${APP_TAG:-local}
+    command: >
+      sh -c 'if [ "$$APP_TAG" = bad ]; then echo "simulated bad release" >&2; exit 1; fi;
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-1}'

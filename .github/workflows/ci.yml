@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.11"
       # requirements-eval.txt too, so tests that need ragas actually run here instead of skipping
-      - run: pip install -r requirements.txt -r requirements-eval.txt pytest ruff
+      - run: pip install -r requirements.txt -r requirements-eval.txt pytest pytest-asyncio ruff
       - run: ruff check .
       - run: pytest -q
 
@@ -91,6 +91,16 @@ jobs:
           docker compose exec -T api python -m evals.run_redteam 2>&1 | tee redteam.txt
       - name: MCP server tools
         run: docker compose exec -T api python -c "import asyncio; from app.mcp_server import mcp; print(sorted(t.name for t in asyncio.run(mcp.list_tools())))"
+      - name: Agent reads through MCP against the real DB and Qdrant (TOOLS_VIA_MCP=1)
+        run: |
+          docker compose exec -T -e TOOLS_VIA_MCP=1 api python -c "
+          from app.agent import kpi_node, runbook_node
+          a = {'cell_id': 'CELL_001', 'kpi': 'prb_utilization_pct', 'description': 'high PRB utilization'}
+          p = kpi_node({'alert': a})['profile']; r = runbook_node({'alert': a})['runbook']
+          print(p); print(len(r), 'runbook hits')
+          assert isinstance(p, dict) and p, 'empty KPI profile over MCP'
+          assert r and r[0].get('source'), 'no runbook hits over MCP'
+          "
       - name: End-to-end smoke (real LiteLLM path via fake server, real auth)
         env:
           API_KEY: ci-approver-key
@@ -118,6 +128,14 @@ jobs:
           set -o pipefail
           python scripts/load_test.py --concurrency 20 --total 100 \
             --max-error-rate 0.05 --max-p95-s 20 2>&1 | tee load.txt
+      - name: Open-loop soak (60s at 5 req/s, fixed arrival rate)
+        env:
+          API_KEY: ci-approver-key
+        run: |
+          pip install -q httpx
+          set -o pipefail
+          python scripts/load_test.py --rps 5 --duration 60 \
+            --max-error-rate 0.02 --max-p95-s 20 2>&1 | tee soak.txt
       - name: Backup and restore verification (real pg_dump/pg_restore, same image as prod)
         run: |
           set -o pipefail
@@ -213,6 +231,22 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/prod_smoke.sh 2>&1 | tee prod.txt
+      - name: Deploy script - good deploy, bad deploy rolls back, manual rollback (real containers)
+        env:
+          DC: docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ci.yml -f docker-compose.ci-deploy.yml
+          HEALTH_TRIES: "24"
+        run: |
+          set -o pipefail
+          scripts/deploy.sh ci1 2>&1 | tail -3
+          test "$(cat .deploy/current)" = ci1
+          if scripts/deploy.sh bad > deploy_bad.txt 2>&1; then echo "bad deploy unexpectedly succeeded"; exit 1; fi
+          tail -5 deploy_bad.txt
+          grep -q "rolled back to ci1" deploy_bad.txt
+          test "$(cat .deploy/current)" = ci1
+          $DC exec -T api python -c "import urllib.request; assert urllib.request.urlopen('http://localhost:8000/ready', timeout=5).status == 200"
+          scripts/deploy.sh ci2 2>&1 | tail -2
+          scripts/deploy.sh --rollback 2>&1 | tail -2
+          test "$(cat .deploy/current)" = ci1
       - name: Publish results as annotations
         if: always()
         run: |
