@@ -18,6 +18,11 @@ services:
       - --api-key=${VLLM_API_KEY:?set VLLM_API_KEY in .env}
       - --max-model-len=${VLLM_MAX_MODEL_LEN:-8192}
       - --gpu-memory-utilization=${VLLM_GPU_UTIL:-0.90}
+      # Without these two flags vLLM rejects `tools` and the agent silently falls back to the
+      # fixed pipeline. `hermes` is the parser for Qwen2.5; change it for other model families.
+      - --enable-auto-tool-choice
+      - --tool-call-parser=${VLLM_TOOL_PARSER:-hermes}
+      - --tensor-parallel-size=${VLLM_GPUS:-1}
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
     volumes: [hf_cache:/root/.cache/huggingface]

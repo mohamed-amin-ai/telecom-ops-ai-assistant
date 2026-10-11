@@ -375,6 +375,22 @@ Caveats: the scenarios are mine, the sample is small, and these are regression/c
 Real tool calling was exercised end to end only against a fake LLM server that emulates `tool_use` (full stack in CI)
 and local Ollama models. It has not been measured on a larger model or a vLLM-served one.
 
+### Measured on 2 GPUs (Kaggle, 2x Tesla T4, vLLM 0.9.2 tensor-parallel 2, Qwen2.5-7B-Instruct, agentic + MCP)
+`kaggle/bench_kaggle.sh` + `scripts/bench_incident.py`, 3 scenarios x 10 timed runs after 2 warm-ups, request to
+"awaiting approval" (human approval excluded), seeded data, no failures (30/30):
+
+| scenario | median | p95 |
+|---|---|---|
+| all | 38.9 s | 43.9 s |
+| CELL_001 PRB | 38.9 s | 40.7 s |
+| CELL_002 RRC | 42.3 s | 44.0 s |
+| CELL_003 handover | 31.1 s | 36.9 s |
+
+The agent made 3.0 tool calls per incident, but a third of them (the `kpi_profile` call, every time) came from the
+deterministic safety net: the 7B model, like the 1.5B/3B models in the tool-selection eval, opens with `get_kpis`
+and never chose `kpi_profile` or `ticket_history`. The safety net is doing real work, and the tool descriptions/prompt
+are the thing to improve. This is a latency number on T4s (slow, PCIe tensor-parallel), not a quality measurement.
+
 ## Layout
 - `app/rag.py`: ingest (with ingest-time injection scanning) and hybrid retrieval (Qdrant
   dense + BM25, RRF, optional rerank)
