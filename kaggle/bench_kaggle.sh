@@ -103,11 +103,13 @@ nohup "$PY" -m uvicorn app.main:app --host 0.0.0.0 --port 8001 > "$W/api.log" 2>
 API_PID=$!
 wait_http localhost:8001/health api 36 "$API_PID" || { echo "--- api.log (tail) ---"; tail -60 "$W/api.log"; exit 1; }
 
-step "Benchmark"
 GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader | sort | uniq -c | tr -s ' ' | paste -sd, -)
+if [ "${SKIP_BENCH:-0}" != "1" ]; then
+step "Benchmark"
 "$PY" scripts/bench_incident.py --url http://localhost:8001 --runs "$RUNS" --warmup 2 \
   --label "${GPU_NAMES}; vLLM ${VLLM_VERSION} TP=${GPUS}; ${MODEL}; agentic+MCP" \
   --out "$W/bench_result.json" | tee "$W/bench_output.txt"
+fi
 step "Agent eval (ground-truth detection, tool use, stability, LLM judge)"
 # Judge = the same 7B model here (only one model fits). Treat the judge numbers as indicative.
 "$PY" -m evals.run_agent_eval --url http://localhost:8001 --repeats "${EVAL_REPEATS:-3}" --judge \

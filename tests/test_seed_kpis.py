@@ -16,14 +16,15 @@ def _profiles(now, seed):
     return out
 
 
-# every weekday x several run times and seeds: faults always found, nothing else ever flagged
+# Every weekday x every hour of the day x two seeds. An earlier version of this test sampled only
+# 4 hours and missed that the PRB fault went undetected at ~46% of hours (a Kaggle run exposed it).
+@pytest.mark.parametrize("seed", [7, 42])
 @pytest.mark.parametrize("day", range(7))
-@pytest.mark.parametrize("hour", [3, 9, 15, 22])
-@pytest.mark.parametrize("seed", [1, 7, 42])
-def test_only_injected_faults_are_anomalous(day, hour, seed):
-    now = dt.datetime(2026, 10, 5 + day, hour, 7, tzinfo=dt.UTC)
-    flagged = {k for k, p in _profiles(now, seed).items() if p.get("anomalous")}
-    assert flagged == set(FAULTS)
+def test_only_injected_faults_are_anomalous(day, seed):
+    for hour in range(24):
+        now = dt.datetime(2026, 10, 5 + day, hour, 23, tzinfo=dt.UTC)
+        flagged = {k for k, p in _profiles(now, seed).items() if p.get("anomalous")}
+        assert flagged == set(FAULTS), (day, hour, flagged)
 
 
 def test_shape_is_not_a_plain_sine():

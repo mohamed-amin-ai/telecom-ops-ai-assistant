@@ -184,8 +184,9 @@ which do not have this schema, so none is bundled. To use a real export from you
 `python -m scripts.import_kpis export.csv` (long format) or `--wide --kpi-cols ... --rename "Vendor Name=kpi"`.
 The seed below stays the default demo data. It is synthetic but shaped like real traffic: two daily busy hours, a night trough,
 a small weekend dip, per-cell load character, autocorrelated noise, load-coupled success rates, missing samples and benign
-blips. `tests/test_seed_kpis.py` checks, for every weekday, several run times and 3 seeds, that exactly the 3 injected
-faults are flagged and nothing else. (A +30 spike on a cell already near 100% PRB would saturate; CELL_001 is kept at ~65% peak
+blips. `tests/test_seed_kpis.py` checks, for every weekday, every hour of the day and 2 seeds, that exactly the 3 injected
+faults are flagged and nothing else (an earlier, sparser version of this test passed while the PRB fault was missed at
+about half of all hours; see the detector note under Evals). (A +30 spike on a cell already near 100% PRB would saturate; CELL_001 is kept at ~65% peak
 so the fault stays visible.)
 
 **Runbooks 23-27** are marked `STANDARDS-DERIVED`: written from the named 3GPP specs (RRC timers and
@@ -389,21 +390,59 @@ and optionally an LLM judge (consistent with the evidence, grounded, actionable,
 intervals. Nine pairs is small and the data is synthetic; the judge is the same model on Kaggle. Not run in CI (needs a
 real stack and model); `kaggle/bench_kaggle.sh` runs it after the latency benchmark.
 
+### Agent-eval runs (2x T4, Qwen2.5-7B, 27 incidents = 9 cell/KPI pairs x 3, all succeeded)
+| metric | run 1 (before fixes) | run 2 (after detector + severity fixes) |
+|---|---|---|
+| detection recall (3 faulty pairs x 3) | 66.7% (35-88) | 100% (70-100) |
+| false-alarm rate (6 healthy pairs x 3) | 0% (0-18) | 0% (0-18) |
+| model called kpi_profile / search_runbooks / ticket_history itself | 100% each; safety net 0% | 100% each (87-100); safety net 0% |
+| tool calls per incident / duplicate, rejected, errored | 3.0 / 0 | 3.0 / 0 |
+| run-to-run stability of tool choice | 1.0 | 1.0 |
+| judge: consistent / grounded | 100% / 100% | 100% / 100% (each 87-100) |
+| judge: actionable | 100% | **63% (44-79)** |
+| judge: severity stated | 25.9% (13-45) | 77.8% (59-89) |
+| latency median / p95 (agent eval) | n/a | 22.4 s / 25.7 s (re-run: 23.7 s / 29.4 s) |
+
+What the two runs show:
+- **Detector, not agent.** Recall 66.7% meant one fault was missed on every repeat. The anomaly check pooled all baseline
+  values from the same hours, so the daily ramp inside the 4-hour window inflated the spread and a +30 PRB jump scored
+  z=2.2 (threshold 3). It now compares each recent point with the same 15-minute slot on earlier days and scales by
+  day-to-day scatter at a fixed slot. Simulation: 0 of 6,048 fault windows missed, 0 of 12,096 healthy windows flagged.
+  Re-measured on the T4s: 9/9 faults found, 0/18 false alarms. "consistent" stays 100% because the judge sees only the
+  tool output, so it checks agreement with the evidence, not with ground truth.
+- **Severity.** The diagnosis prompt now requires a final `Severity: P1-P4 (reason)` line: 26% -> 78%. Still 22% missing.
+- **Actionable fell 100% -> 63-67%: confirmed a metric-design artefact.** The judge was asked for "a concrete next
+  step" on every run, including healthy cells where the correct diagnosis is "no fault evident". Scored on faulty runs
+  only (re-run, same setup): actionable 9/9 (70-100) and severity stated 9/9 (70-100). The all-runs figures in that re-run
+  were 66.7% actionable and 81.5% severity (the healthy-cell diagnoses are what pull them down). With the same 7B
+  model as judge and 9 faulty runs, the intervals are wide.
+- Same 9 pairs used for tuning and measuring, one model, synthetic data: indicative only.
+
 ### Measured on 2 GPUs (Kaggle, 2x Tesla T4, vLLM 0.9.2 tensor-parallel 2, Qwen2.5-7B-Instruct, agentic + MCP)
-`kaggle/bench_kaggle.sh` + `scripts/bench_incident.py`, 3 scenarios x 10 timed runs after 2 warm-ups, request to
-"awaiting approval" (human approval excluded), seeded data, no failures (30/30):
+`kaggle/bench_kaggle.sh` + `scripts/bench_incident.py`: 3 scenarios x 10 timed runs after 2 warm-ups, request to
+"awaiting approval" (human approval excluded), seeded data, 30/30 successful (latest run, after the detector and
+severity fixes):
 
 | scenario | median | p95 |
 |---|---|---|
-| all | 38.9 s | 43.9 s |
-| CELL_001 PRB | 38.9 s | 40.7 s |
-| CELL_002 RRC | 42.3 s | 44.0 s |
-| CELL_003 handover | 31.1 s | 36.9 s |
+| all | 25.2 s | 29.4 s |
+| CELL_001 PRB | 24.3 s | 25.5 s |
+| CELL_002 RRC | 28.3 s | 29.8 s |
+| CELL_003 handover | 22.6 s | 26.0 s |
 
-The agent made 3.0 tool calls per incident, but a third of them (the `kpi_profile` call, every time) came from the
-deterministic safety net: the 7B model, like the 1.5B/3B models in the tool-selection eval, opens with `get_kpis`
-and never chose `kpi_profile` or `ticket_history`. The safety net is doing real work, and the tool descriptions/prompt
-are the thing to improve. This is a latency number on T4s (slow, PCIe tensor-parallel), not a quality measurement.
+The model chose `kpi_profile`, `search_runbooks` and `ticket_history` itself in all 30 incidents: **safety-net share 0%**
+(3.0 tool calls per incident). Three 30-run measurements on the same setup (Kaggle 2x T4), none after a change that
+affects model speed except the first:
+
+| run | median | p95 |
+|---|---|---|
+| after tool-prompt fix | 36.6 s | 48.4 s |
+| after detector/severity fixes | 25.2 s | 29.4 s |
+| repeat, new session | 30.1 s | 57.1 s |
+
+The medians span 25-37 s and p95 25-57 s between sessions with no relevant code change, so the honest figure is
+**about 30 s median, with session-to-session variance of roughly +/-6 s (Kaggle T4 host and warm-up state)**. Do not read
+any single run as an improvement.
 
 ## Layout
 - `app/rag.py`: ingest (with ingest-time injection scanning) and hybrid retrieval (Qdrant

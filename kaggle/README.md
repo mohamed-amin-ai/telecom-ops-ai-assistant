@@ -25,3 +25,6 @@ Without Timescale, the script installs a no-op `create_hypertable` so migrations
 Also fixed while writing this: `docker-compose.vllm.yml` lacked `--enable-auto-tool-choice` and
 `--tool-call-parser`, without which vLLM rejects tool calls and the agent silently fell back to the
 fixed pipeline.
+
+To re-run only the agent eval (skips the 30-run latency benchmark; still starts vLLM and the API):
+`!SKIP_BENCH=1 bash kaggle/bench_kaggle.sh`

@@ -49,3 +49,15 @@ def test_parse_judge_is_strict():
     assert parse_judge(ok)["actionable"] is False
     assert parse_judge('{"consistent": true}') is None
     assert parse_judge("no json") is None
+
+
+def test_actionable_is_also_scored_on_faulty_runs_only():
+    t = [{"tool": "kpi_profile", "outcome": "ok"}]
+    yes = {"consistent": True, "grounded": True, "actionable": True, "severity_stated": True}
+    no = {**yes, "actionable": False, "severity_stated": False}
+    faulty = rec("CELL_001", "prb_utilization_pct", True, t, judge=yes)
+    healthy = rec("CELL_002", "prb_utilization_pct", False, t, judge=no)
+    s = summarize([faulty, healthy])
+    assert s["judge"]["actionable"]["rate"] == 0.5
+    assert s["judge"]["actionable_on_faulty"] == {"n": 1, "rate": 1.0, "lo": s["judge"]["actionable_on_faulty"]["lo"], "hi": 1.0}
+    assert s["judge"]["severity_on_faulty"]["n"] == 1

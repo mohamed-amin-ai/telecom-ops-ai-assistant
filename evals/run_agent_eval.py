@@ -102,6 +102,11 @@ def summarize(records: list[dict]) -> dict:
                         "failed": sum(1 for r in ok if "judge" in r and not r["judge"]),
                         **{k: rate([j[k] for j in judged])
                            for k in ("consistent", "grounded", "actionable", "severity_stated")}}
+        # "names a next step" only makes sense where there is a fault: a correct "no fault
+        # evident" on a healthy cell has no step to name, so score these two on faulty runs only.
+        fj = [r["judge"] for r in faulty if r.get("judge")]
+        out["judge"]["actionable_on_faulty"] = rate([j["actionable"] for j in fj])
+        out["judge"]["severity_on_faulty"] = rate([j["severity_stated"] for j in fj])
     return out
 
 
