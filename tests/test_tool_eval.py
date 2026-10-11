@@ -68,3 +68,20 @@ def test_a_call_that_raises_counts_as_wrong_not_a_crash():
     s = ev.run(ROWS, broken)
     assert s["overall"]["first_tool"]["n"] == len(ROWS)
     assert s["overall"]["first_tool"]["rate"] < 0.25  # only the no-tool and write rows "pass"
+
+
+def test_heldout_set_is_well_formed_and_disjoint_from_the_tuned_set():
+    held = [json.loads(x) for x in
+            (Path(__file__).resolve().parent.parent / "evals/tool_selection_heldout.jsonl")
+            .read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(held) >= 40 and len({r["id"] for r in held}) == len(held)
+    assert {t for r in held for t in r["accept_first"]} - {"NONE"} == TOOL_NAMES
+    key = lambda r: json.dumps(r["input"], sort_keys=True)
+    assert not {key(r) for r in held} & {key(r) for r in ROWS}
+    # same oracle contract: scoring works on this file too
+    ROWS_BACKUP = list(ROWS)
+    ROWS[:] = held
+    try:
+        assert ev.run(held, oracle)["overall"]["first_tool"]["rate"] == 1.0
+    finally:
+        ROWS[:] = ROWS_BACKUP

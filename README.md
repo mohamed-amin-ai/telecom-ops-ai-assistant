@@ -377,7 +377,7 @@ procedure in the system prompt (kpi_profile, then search_runbooks, then ticket_h
 clearer tool descriptions. After it, alert triage is 100% for both models. Remaining misses: 3B calls `search_runbooks` on
 2 of 3 no-tool questions; 1.5B misses 3 of 8 knowledge questions.
 **This is partly tuned to its own test:** I wrote the fix after seeing which scenarios failed, on the same 43 scenarios (I did
-not copy their text into the prompt, but treat the "after" numbers as optimistic until a fresh held-out set is scored).
+not copy their text into the prompt, but treat the "after" numbers as optimistic until the held-out set is scored: `evals/tool_selection_heldout.jsonl`, 42 new scenarios never used to tune the prompts; CI scores it on both small models, results below once measured).
 Neither model attempted a write in any run. Caveats: the scenarios are mine, the sample is small, and these are regression/comparison numbers, not production accuracy.
 Real tool calling was exercised end to end only against a fake LLM server that emulates `tool_use` (full stack in CI)
 and local Ollama models. It has not been measured on a larger model or a vLLM-served one.
