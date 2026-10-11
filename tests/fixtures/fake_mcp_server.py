@@ -14,6 +14,13 @@ def search_runbooks(query: str, k: int = 5) -> list[dict]:
 
 
 @m.tool()
+def slow(seconds: float) -> dict:
+    import time
+    time.sleep(seconds)
+    return {"slept": seconds}
+
+
+@m.tool()
 def boom() -> dict:
     raise ValueError("nope")
 

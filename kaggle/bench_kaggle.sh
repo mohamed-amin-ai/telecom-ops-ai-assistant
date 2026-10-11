@@ -111,6 +111,9 @@ step "Benchmark"
   --out "$W/bench_result.json" | tee "$W/bench_output.txt"
 fi
 step "Agent eval (ground-truth detection, tool use, stability, LLM judge)"
+# The detector reports a series whose last point is >2 h old as "silent cell", so the seeded KPIs
+# must be fresh: re-seed right before the eval (the benchmark above can run for a long time).
+"$PY" -m scripts.seed_kpis
 # Judge = the same 7B model here (only one model fits). Treat the judge numbers as indicative.
 "$PY" -m evals.run_agent_eval --url http://localhost:8001 --repeats "${EVAL_REPEATS:-3}" --judge \
   --label "${GPU_NAMES}; vLLM ${VLLM_VERSION} TP=${GPUS}; ${MODEL}; agentic+MCP" \

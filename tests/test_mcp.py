@@ -78,3 +78,39 @@ def test_concurrent_callers_are_safe():
         out = list(ex.map(lambda i: mcp_client.call_tool(
             "kpi_profile", {"cell_id": f"c{i}", "kpi": "k"}, FAKE)["cell_id"], range(24)))
     assert out == [f"c{i}" for i in range(24)]
+
+
+def test_a_queued_call_timing_out_does_not_kill_the_running_call():
+    """Regression: the wait for the shared pipe used to count against the caller's timeout and a
+    timeout closed the whole session, killing the healthy call that was still running."""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    mcp_client.close_all()
+    mcp_client.call_tool("kpi_profile", {"cell_id": "w", "kpi": "k"}, FAKE)   # warm
+    s = mcp_client._session(FAKE)
+    gen = s._gen
+    with ThreadPoolExecutor(2) as ex:
+        a = ex.submit(mcp_client.call_tool, "slow", {"seconds": 3}, FAKE, 20)
+        time.sleep(0.5)                                  # A now holds the pipe
+        t0 = time.monotonic()
+        b = ex.submit(mcp_client.call_tool, "kpi_profile", {"cell_id": "b", "kpi": "k"}, FAKE, 1)
+        with pytest.raises(mcp_client.McpBusy):
+            b.result()
+        assert time.monotonic() - t0 < 4
+        assert a.result() == {"slept": 3.0}              # A was not killed
+    assert s._gen == gen and s.alive()                   # and the session was not replaced
+    assert mcp_client.call_tool("kpi_profile", {"cell_id": "z", "kpi": "k"}, FAKE)["cell_id"] == "z"
+    assert threading.active_count() < 50
+
+
+def test_late_failure_does_not_close_a_newer_session():
+    mcp_client.close_all()
+    mcp_client.call_tool("kpi_profile", {"cell_id": "a", "kpi": "k"}, FAKE)
+    s = mcp_client._session(FAKE)
+    old_gen = s._gen
+    s.close()
+    mcp_client.call_tool("kpi_profile", {"cell_id": "b", "kpi": "k"}, FAKE)   # new generation
+    assert s._gen == old_gen + 1
+    s._close_if(old_gen)                                 # a straggler from the old generation
+    assert s.alive()

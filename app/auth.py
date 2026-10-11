@@ -101,10 +101,17 @@ def authenticate_bearer(token: str) -> Principal | None:
         log.info("bearer token rejected: %s", type(e).__name__)
         return None
     raw = _claim(claims, settings.oidc_role_claim) or []
-    roles = [raw] if isinstance(raw, str) else [r for r in raw if isinstance(r, str)]
+    if isinstance(raw, str):
+        roles = [raw]
+    elif isinstance(raw, (list, tuple)):
+        roles = [r for r in raw if isinstance(r, str)]
+    else:
+        roles = []
     best = max((r for r in roles if r in ROLE_RANK), key=ROLE_RANK.get, default=None)
     name = str(claims.get(settings.oidc_name_claim) or claims.get("email") or claims["sub"])
-    return Principal(name, best) if best else None
+    # Namespaced so an SSO user can never share a rate-limit bucket or audit identity with an
+    # API-key principal of the same name.
+    return Principal(f"sso:{name}", best) if best else None
 
 
 def client_ip(request: Request) -> str:

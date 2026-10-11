@@ -33,6 +33,12 @@ def _parse(name: str, res):
     return json.loads(res.content[0].text)
 
 
+class McpBusy(RuntimeError):
+    """Another call held the single pipe for the whole wait. The session itself is healthy:
+    the caller fails fast and nothing is torn down (tearing it down would kill the call that
+    is legitimately running)."""
+
+
 class Session:
     def __init__(self, server: StdioServerParameters):
         self.server = server
@@ -42,6 +48,7 @@ class Session:
         self._session = None
         self._stop = None
         self._alock = None
+        self._gen = 0  # bumped on every (re)start so a late failure can't close a newer session
 
     async def _hold(self, ready: threading.Event, failed: list):
         # Never raise inside the stdio/session context managers: anyio would wrap it in an
@@ -66,6 +73,7 @@ class Session:
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._hold(ready, failed))
 
+        self._gen += 1
         self._thread = threading.Thread(target=run, daemon=True, name="mcp-session")
         self._thread.start()
         if not ready.wait(30) or self._session is None:
@@ -78,17 +86,32 @@ class Session:
         with self._guard:
             self._close_locked()
 
+    def _close_if(self, gen: int):
+        """Close only the session generation that failed; if another thread already replaced it
+        the new, healthy session is left alone."""
+        with self._guard:
+            if self._gen == gen:
+                self._close_locked()
+
     def _close_locked(self):
         if self._thread and self._thread.is_alive() and self._stop is not None:
             self._loop.call_soon_threadsafe(self._stop.set)
             self._thread.join(5)
+            if not self._thread.is_alive() and self._loop is not None:
+                self._loop.close()  # don't leak an event loop per restart
         self._thread = self._session = None
 
     async def _do(self, op: str, name: str, args: dict, timeout: float):
-        async with self._alock:
+        try:  # waiting for the pipe is bounded separately from running the call
+            await asyncio.wait_for(self._alock.acquire(), timeout)
+        except TimeoutError as e:
+            raise McpBusy("MCP session busy: another call held it for the whole wait") from e
+        try:
             if op == "list":
                 return await asyncio.wait_for(self._session.list_tools(), timeout)
             return await asyncio.wait_for(self._session.call_tool(name, args), timeout)
+        finally:
+            self._alock.release()
 
     def request(self, op: str, name: str = "", args: dict | None = None, timeout: float = 60.0):
         last = None
@@ -97,17 +120,19 @@ class Session:
                 if not self.alive():
                     self._close_locked()
                     self._start()
-                loop = self._loop
+                loop, gen = self._loop, self._gen
             try:
                 fut = asyncio.run_coroutine_threadsafe(
                     self._do(op, name, args or {}, timeout), loop)
-                return fut.result(timeout + 5)
+                return fut.result(2 * timeout + 10)
+            except McpBusy:
+                raise
             except TimeoutError:
-                self.close()
+                self._close_if(gen)  # the call itself hung: the server may be wedged
                 raise
             except Exception as e:  # noqa: BLE001 -- broken pipe, dead server, protocol error
                 last = e
-                self.close()
+                self._close_if(gen)
         raise RuntimeError(f"MCP transport failed twice: {last!r}")
 
 

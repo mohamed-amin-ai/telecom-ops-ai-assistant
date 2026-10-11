@@ -376,8 +376,17 @@ The "before" rows opened alert triage with `get_kpis` instead of `kpi_profile` (
 procedure in the system prompt (kpi_profile, then search_runbooks, then ticket_history; get_kpis only for raw values) and
 clearer tool descriptions. After it, alert triage is 100% for both models. Remaining misses: 3B calls `search_runbooks` on
 2 of 3 no-tool questions; 1.5B misses 3 of 8 knowledge questions.
-**This is partly tuned to its own test:** I wrote the fix after seeing which scenarios failed, on the same 43 scenarios (I did
-not copy their text into the prompt, but treat the "after" numbers as optimistic until the held-out set is scored: `evals/tool_selection_heldout.jsonl`, 42 new scenarios never used to tune the prompts; CI scores it on both small models, results below once measured).
+**Held-out check (42 new scenarios in `evals/tool_selection_heldout.jsonl`, written after the prompt was frozen and never used to tune it; CI run):**
+
+| model | tuned set (43) | held-out set (42) |
+|---|---|---|
+| qwen2.5:1.5b | 93.0% (81-98) | **85.7% (72-93)** |
+| qwen2.5:3b | 95.3% (85-99) | **92.9% (81-98)** |
+
+The 3B model barely moves (-2 points, inside the intervals); the 1.5B loses 7 points, so part of its "after" number was tuning.
+Weak spots that repeat on both sets: pleasantries ("ok", "good morning") make the 3B model call `kpi_profile` (no-tool category 25-33%
+correct), and the 1.5B model often answers knowledge questions without searching the runbooks (43%). Neither matters for the
+incident flow, where an alert always exists, but they would for a chat front-end. Writes: 0 attempts in 85 scenarios on both models.
 Neither model attempted a write in any run. Caveats: the scenarios are mine, the sample is small, and these are regression/comparison numbers, not production accuracy.
 Real tool calling was exercised end to end only against a fake LLM server that emulates `tool_use` (full stack in CI)
 and local Ollama models. It has not been measured on a larger model or a vLLM-served one.
@@ -515,6 +524,28 @@ real bugs, each with a regression test:
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set); a test asserts no prompt or KPI content leaks into span attributes.
 - **Alerts:** `AgentFallbackRateHigh` (model stops using tools) with a promtool unit test.
 - **Runbook and SLOs:** `docs/oncall.md` (targets, alert -> action, disaster recovery).
+
+## Independent code audit (found and fixed)
+A separate reviewer read the core code and probed it with throwaway scripts. Confirmed defects, all fixed with regression tests:
+- **A "reject" retry could still create a ticket.** If the ticket step failed after approval, the checkpoint waited on
+  `ticket`; `/decision` only checked that something was pending and ignored the resume value. Now `/decision` resumes only a
+  pending `approval`; a retry of a failed later step may repeat the *same* decision (409 otherwise), and `create_ticket` is
+  idempotent per incident (existing-row check, plus a unique index in migration 0005).
+- **The agent could present another cell's evidence.** Tool arguments were only regex-validated, so a model steered by alert text
+  could call `kpi_profile` for `CELL_999` and the approver saw it as this alert's profile. Tools are now pinned to the alerted
+  cell (and KPI for `kpi_profile`).
+- **A silent cell looked healthy.** The detector compared the last data point with itself, so a feed that stopped 10 h ago
+  was "not anomalous". It now reports data older than 2 h as anomalous ("feed stopped or cell silent"). NaN/inf values no longer
+  break detection or JSON serialisation.
+- **One slow MCP call killed healthy ones.** The wait for the shared pipe counted against a queued caller's timeout and a timeout
+  closed the whole session. Queue-wait and run time are now bounded separately, only the failed session generation is closed,
+  and event loops are released on restart.
+- Smaller: SSO users are namespaced (`sso:<name>`) so they cannot share a rate-limit bucket or audit identity with an API-key
+  user; a malformed role claim is a 401 not a 500; `/audit?limit=` is validated; an audit-write failure after a ticket exists no
+  longer turns a success into a 500.
+- **Known and not fixed:** `/decision` holds one DB connection for the whole graph run, so about `DB_POOL_MAX` concurrent approvals
+  can starve the pool (reasoned, not load-tested); the advisory-lock key is a 32-bit hash (rare spurious 409); the detector does not
+  scale z by sqrt(n), so a sustained small shift is under-detected; the DB session timezone is assumed fixed (no DST handling).
 
 ## Not production grade yet
 Real Postgres-backed agent state, real persistence, versioned migrations, per-user auth

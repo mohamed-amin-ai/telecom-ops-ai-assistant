@@ -134,6 +134,18 @@ def _observation(result) -> str:
     return text
 
 
+def scope_error(name: str, args: dict, alert: dict) -> str | None:
+    """The agent investigates ONE alert. A model (or text it was steered by) must not pull the
+    profile or history of another cell and have it presented to the approver as this alert's
+    evidence, so cell_id (and the KPI for kpi_profile) must match the alert."""
+    if name in ("kpi_profile", "get_kpis", "ticket_history") and alert.get("cell_id") \
+            and args.get("cell_id") != alert["cell_id"]:
+        return f"cell_id must be {alert['cell_id']} (the alerted cell)"
+    if name == "kpi_profile" and alert.get("kpi") and args.get("kpi") != alert["kpi"]:
+        return f"kpi must be {alert['kpi']} (the alerted KPI)"
+    return None
+
+
 def investigate(alert: dict, chat_fn=chat_with_tools, run_fn=run_tool,
                 max_steps: int | None = None) -> dict:
     """Returns {profile, runbook, history, notes, trace, stopped}. `stopped` is one of
@@ -164,6 +176,8 @@ def investigate(alert: dict, chat_fn=chat_with_tools, run_fn=run_tool,
             else:
                 used += 1
                 args, err = validate_args(c["name"], c["arguments"])
+                if err is None:
+                    err = scope_error(c["name"], args, alert)
                 key = (c["name"], json.dumps(args, sort_keys=True))
                 if err:
                     obs, outcome = f"error: {err}", "rejected"

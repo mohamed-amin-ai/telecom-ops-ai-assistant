@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timedelta
 from statistics import mean, pstdev
 
@@ -30,14 +31,27 @@ def _residual_profile(parsed, cutoff):
     return noise, mean(base_means), [v for _, v in recent], mean(resid)
 
 
-def profile_series(points: list[dict], recent_hours: int = 4) -> dict:
+STALE_AFTER_MIN = 120  # KPIs arrive every 15 min; two hours of silence is a dead feed or cell
+
+
+def profile_series(points: list[dict], recent_hours: int = 4,
+                   now: datetime | None = None) -> dict:
     """Compare the most recent window with the same time of day on earlier days.
-    points: [{"ts": iso8601, "value": float}, ...] ordered by ts."""
+    points: [{"ts": iso8601, "value": float}, ...] ordered by ts. Non-finite values are
+    dropped. With `now`, a series whose last point is more than STALE_AFTER_MIN old is
+    reported as anomalous ("no recent data") instead of being compared against itself: a cell
+    that went silent must not look healthy."""
     parsed = [(datetime.fromisoformat(p["ts"]), p["value"]) for p in points
-              if p["value"] is not None]
+              if p["value"] is not None and math.isfinite(p["value"])]
     if len(parsed) < 8:
         return {"n": len(parsed), "note": "insufficient data"}
     end = parsed[-1][0]
+    if now is not None:
+        gap_min = (now - end).total_seconds() / 60
+        if gap_min > STALE_AFTER_MIN:
+            return {"n": len(parsed), "anomalous": True, "stale_minutes": round(gap_min),
+                    "last": round(parsed[-1][1], 2),
+                    "note": f"no data for {round(gap_min)} min: feed stopped or cell silent"}
     cutoff = end - timedelta(hours=recent_hours)
     res = _residual_profile(parsed, cutoff)
     if res is not None:

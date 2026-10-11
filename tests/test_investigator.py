@@ -50,7 +50,7 @@ def test_create_ticket_is_not_a_tool_and_is_rejected_if_named():
 
 def test_step_limit_stops_the_loop_and_forces_a_no_tools_summary():
     log = []
-    forever = [turn(call("kpi_profile", {"cell_id": "CELL_001", "kpi": f"k{i}"}, i))
+    forever = [turn(call("search_runbooks", {"query": f"q{i}"}, i))
                for i in range(20)]
     chat = scripted(*forever[:3], turn(text="summary of findings"))
     r = inv.investigate(ALERT, chat, runner(log), max_steps=3)
@@ -61,7 +61,7 @@ def test_step_limit_stops_the_loop_and_forces_a_no_tools_summary():
 
 def test_calls_beyond_budget_inside_one_turn_are_not_executed():
     log = []
-    many = turn(*[call("kpi_profile", {"cell_id": "CELL_001", "kpi": f"k{i}"}, i)
+    many = turn(*[call("search_runbooks", {"query": f"q{i}"}, i)
                   for i in range(6)])
     chat = scripted(many, turn(text="ok"))
     r = inv.investigate(ALERT, chat, runner(log), max_steps=2)
@@ -91,7 +91,7 @@ def test_no_tool_call_is_reported():
 def test_tool_error_is_shown_to_the_model_not_raised():
     def boom(name, args):
         raise RuntimeError("db down")
-    chat = scripted(turn(call("kpi_profile", {"cell_id": "CELL_001", "kpi": "k"})),
+    chat = scripted(turn(call("kpi_profile", {"cell_id": "CELL_001", "kpi": "prb_utilization_pct"})),
                     turn(text="could not read KPIs"))
     r = inv.investigate(ALERT, chat, boom)
     assert r["trace"][0]["outcome"] == "error"
@@ -206,3 +206,24 @@ def test_fixed_mode_does_not_call_the_model_for_tools(agent, monkeypatch):
     monkeypatch.setattr(agent, "investigate", boom)
     _, _, state = _run(g, True)
     assert state.values["profile"]["src"] == "fixed"
+
+
+def test_tools_are_pinned_to_the_alerted_cell_and_kpi():
+    """A model steered by alert text must not fetch another cell's evidence and have it shown
+    to the approver as this alert's profile."""
+    log = []
+    chat = scripted(
+        turn(call("kpi_profile", {"cell_id": "CELL_999", "kpi": "prb_utilization_pct"}, 1),
+             call("kpi_profile", {"cell_id": "CELL_001", "kpi": "handover_success_rate"}, 2),
+             call("ticket_history", {"cell_id": "CELL_999"}, 3),
+             call("get_kpis", {"cell_id": "CELL_999", "kpi": "prb_utilization_pct"}, 4)),
+        turn(text="done"))
+    r = inv.investigate(ALERT, chat, runner(log))
+    assert [t["outcome"] for t in r["trace"]] == ["rejected"] * 4
+    assert log == [] and r["profile"] is None and r["history"] is None
+    assert "alerted cell" in chat.sent[1][0][-1]["content"]
+    ok = inv.scope_error("kpi_profile", {"cell_id": "CELL_001", "kpi": "prb_utilization_pct"}, ALERT)
+    assert ok is None
+    # other KPIs of the SAME cell are legitimate raw-data reads
+    assert inv.scope_error("get_kpis", {"cell_id": "CELL_001", "kpi": "handover_success_rate"},
+                           ALERT) is None

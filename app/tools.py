@@ -3,8 +3,10 @@ import hmac
 import json
 import logging
 import time
+from datetime import UTC, datetime
 
 import httpx
+import psycopg
 
 from . import metrics
 from .config import settings
@@ -28,7 +30,8 @@ def get_kpis(cell_id: str, kpi: str, hours: int = 24) -> list[dict]:
 def kpi_profile(cell_id: str, kpi: str, lookback_hours: int = 72,
                 recent_hours: int = 4) -> dict:
     """Recent window vs same-hour baseline (z-score). Local, no external service."""
-    return profile_series(get_kpis(cell_id, kpi, lookback_hours), recent_hours)
+    return profile_series(get_kpis(cell_id, kpi, lookback_hours), recent_hours,
+                          now=datetime.now(UTC))
 
 
 def webhook_payload(ticket: dict) -> dict:
@@ -78,24 +81,40 @@ def deliver_ticket_webhook(ticket: dict) -> str | None:
     return status
 
 
+def _ticket_dict(row, thread_id, alert, diagnosis, approved_by) -> dict:
+    return {"id": f"INC-{row[0]}", "thread_id": thread_id, "alert": alert,
+            "diagnosis": diagnosis, "approved_by": approved_by,
+            "created_at": row[1].isoformat()}
+
+
+def _existing_ticket(conn, thread_id: str):
+    return conn.execute("SELECT id, created_at, approved_by, webhook_status FROM tickets "
+                        "WHERE thread_id = %s ORDER BY id LIMIT 1", (thread_id,)).fetchone()
+
+
 def create_ticket(thread_id: str, alert: dict, diagnosis: str,
                   approved_by: str | None = None) -> dict:
-    """Write action. Persists to the tickets table. Only called after human approval."""
+    """Write action. Persists to the tickets table. Only called after human approval.
+    Idempotent per incident (thread): a retried graph step (e.g. after a crash between the
+    INSERT and the next node) returns the existing ticket instead of creating a second one."""
     with get_pool().connection() as conn:
-        row = conn.execute(
-            "INSERT INTO tickets (thread_id, cell_id, kpi, alert, diagnosis, approved_by) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, created_at",
-            (thread_id, alert["cell_id"], alert["kpi"], json.dumps(alert), diagnosis,
-             approved_by),
-        ).fetchone()
-    ticket = {
-        "id": f"INC-{row[0]}",
-        "thread_id": thread_id,
-        "alert": alert,
-        "diagnosis": diagnosis,
-        "approved_by": approved_by,
-        "created_at": row[1].isoformat(),
-    }
+        row = _existing_ticket(conn, thread_id)
+        if row is None:
+            try:
+                row = conn.execute(
+                    "INSERT INTO tickets (thread_id, cell_id, kpi, alert, diagnosis, approved_by) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, created_at",
+                    (thread_id, alert["cell_id"], alert["kpi"], json.dumps(alert), diagnosis,
+                     approved_by),
+                ).fetchone()
+            except psycopg.errors.UniqueViolation:  # lost a race with a concurrent retry
+                conn.rollback()
+                row = _existing_ticket(conn, thread_id)
+                return _ticket_dict(row, thread_id, alert, diagnosis, row[2])
+        else:
+            log.info("ticket for %s already exists (INC-%s); not creating another", thread_id, row[0])
+            return _ticket_dict(row, thread_id, alert, diagnosis, row[2])
+    ticket = _ticket_dict(row, thread_id, alert, diagnosis, approved_by)
     metrics.TICKETS.inc()
     status = deliver_ticket_webhook(ticket)
     if status:

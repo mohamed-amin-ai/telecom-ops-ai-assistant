@@ -40,3 +40,20 @@ def test_healthy_ratio_kpi_not_flagged():
 
 def test_insufficient_data():
     assert profile_series([])["note"] == "insufficient data"
+
+
+def test_nan_and_inf_values_are_ignored_not_propagated():
+    pts = _series(delta=30)
+    pts[-1]["value"] = float("nan")
+    pts[-5]["value"] = float("inf")
+    p = profile_series(pts)
+    assert math.isfinite(p["z_score"]) and p["anomalous"]
+
+
+def test_silent_cell_is_flagged_instead_of_looking_healthy():
+    pts = _series()                                       # last point 2026-01-10 12:00
+    now = datetime(2026, 1, 10, 22, 0, tzinfo=UTC)        # feed silent for 10 hours
+    p = profile_series(pts, now=now)
+    assert p["anomalous"] and p["stale_minutes"] == 600 and "silent" in p["note"]
+    fresh = profile_series(pts, now=datetime(2026, 1, 10, 12, 20, tzinfo=UTC))
+    assert not fresh["anomalous"] and "stale_minutes" not in fresh

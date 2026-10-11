@@ -38,7 +38,7 @@ def token(key, kid="k1", alg="RS256", **over):
 
 def test_valid_token_maps_to_highest_known_role(keys):
     p = auth.authenticate_bearer(token(keys[0], roles=["viewer", "operator", "approver"]))
-    assert p == auth.Principal("amira", "approver")
+    assert p == auth.Principal("sso:amira", "approver")
 
 
 @pytest.mark.parametrize("over", [
@@ -96,7 +96,7 @@ def _req():
 def test_dependency_accepts_bearer_enforces_role_and_401s_bad_tokens(keys):
     dep = auth.require("approver")
     ok = dep(_req(), x_api_key=None, authorization="Bearer " + token(keys[0]))
-    assert ok.name == "amira" and ok.role == "approver"
+    assert ok.name == "sso:amira" and ok.role == "approver"
     with pytest.raises(HTTPException) as e:
         auth.require("admin")(_req(), x_api_key=None, authorization="Bearer " + token(keys[0]))
     assert e.value.status_code == 403
@@ -106,3 +106,8 @@ def test_dependency_accepts_bearer_enforces_role_and_401s_bad_tokens(keys):
     with pytest.raises(HTTPException) as e:
         dep(_req(), x_api_key=None, authorization=None)
     assert e.value.status_code == 401
+
+
+def test_non_iterable_role_claim_is_a_401_not_a_500(keys):
+    assert auth.authenticate_bearer(token(keys[0], roles=7)) is None
+    assert auth.authenticate_bearer(token(keys[0], roles={"approver": True})) is None

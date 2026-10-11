@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 import psycopg
 import redis as redis_lib
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from langgraph.types import Command
@@ -184,24 +184,45 @@ def decide(tid: str, d: Decision, p: Principal = APPROVER):
         try:
             if not graph.get_state(cfg).next:
                 raise HTTPException(status_code=409, detail="incident already decided")
-            audit.record(p.name, "decision", tid, approve=d.approve)  # fail-closed
+            pending = graph.get_state(cfg).next
+            if "approval" in pending:
+                audit.record(p.name, "decision", tid, approve=d.approve)  # fail-closed
+                resume = Command(resume={"approve": d.approve, "by": p.name})
+            else:
+                # The decision was already taken and a later step (ticket / report) failed, so
+                # the checkpoint is waiting on it. A retry may only continue that decision: it
+                # cannot flip it (a "reject" here must not be able to create a ticket, and an
+                # "approve" must not resurrect a rejection -- hence the 409s below).
+                state = graph.get_state(cfg).values
+                if d.approve != bool(state.get("approved")):
+                    raise HTTPException(status_code=409, detail=(
+                        "incident was already " + ("approved" if state.get("approved")
+                                                   else "rejected") + "; only a retry of the "
+                        "same decision is accepted"))
+                audit.record(p.name, "decision_retry", tid, approve=d.approve)
+                resume = None
             with get_pool().connection() as wait_conn:
                 opened = wait_conn.execute(
                     "SELECT EXTRACT(EPOCH FROM (now() - ts)) FROM audit_log "
                     "WHERE thread_id = %s AND action = 'incident_opened' ORDER BY id LIMIT 1",
                     (tid,)).fetchone()
-            if opened and opened[0] is not None:
+            if opened and opened[0] is not None and resume is not None:
                 metrics.APPROVAL_WAIT.observe(float(opened[0]))
-            out = graph.invoke(Command(resume={"approve": d.approve, "by": p.name}), cfg)
-            metrics.APPROVALS.labels("approved" if d.approve else "rejected").inc()
+            out = graph.invoke(resume, cfg)
+            if resume is not None:
+                metrics.APPROVALS.labels("approved" if d.approve else "rejected").inc()
             if out.get("ticket"):
-                audit.record(p.name, "ticket_created", tid, ticket_id=out["ticket"]["id"])
+                try:
+                    audit.record(p.name, "ticket_created", tid, ticket_id=out["ticket"]["id"])
+                except psycopg.Error:  # the ticket exists; never turn that into a 500
+                    log.exception("audit write for ticket_created failed (ticket %s)",
+                                  out["ticket"]["id"])
             return _shape(tid, out)
         finally:
             lock_conn.execute("SELECT pg_advisory_unlock(hashtext(%s))", (tid,))
 
 
 @app.get("/audit")
-def audit_trail(thread_id: str | None = None, limit: int = 100,
+def audit_trail(thread_id: str | None = None, limit: int = Query(100, ge=1, le=500),
                 p: Principal = ADMIN):
     return {"entries": audit.recent(thread_id, limit)}
