@@ -15,6 +15,7 @@ import re
 from . import metrics, tools
 from .config import settings
 from .llm import chat_with_tools
+from .tracing import span
 
 log = logging.getLogger("investigator")
 
@@ -146,7 +147,8 @@ def investigate(alert: dict, chat_fn=chat_with_tools, run_fn=run_tool,
     used, notes, stopped = 0, "", "done"
 
     while True:
-        resp = chat_fn(messages, TOOL_SPECS)
+        with span("agent.model_turn", step=used):
+            resp = chat_fn(messages, TOOL_SPECS)
         calls = resp["tool_calls"]
         if not calls:
             notes = resp["content"]
@@ -169,7 +171,8 @@ def investigate(alert: dict, chat_fn=chat_with_tools, run_fn=run_tool,
                     obs, outcome = "duplicate call; result unchanged: " + seen[key], "duplicate"
                 else:
                     try:
-                        result = run_fn(c["name"], args)
+                        with span(f"tool.{c['name']}", tool=c["name"], via_mcp=settings.tools_via_mcp):
+                            result = run_fn(c["name"], args)
                         obs, outcome = _observation(result), "ok"
                         seen[key] = obs[:200]
                         if c["name"] == "kpi_profile":
@@ -193,6 +196,8 @@ def investigate(alert: dict, chat_fn=chat_with_tools, run_fn=run_tool,
                              "what you found, and say what is still unknown."})
             notes = chat_fn(messages, [])["content"]
             break
+    with span("agent.summary", tool_calls=used, stopped=stopped):
+        pass
     metrics.AGENT_STEPS.observe(used)
     metrics.AGENT_STOPS.labels(stopped).inc()
     return {**out, "notes": notes, "trace": trace, "stopped": stopped}

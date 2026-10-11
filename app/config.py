@@ -52,6 +52,16 @@ class Settings:
     root_path: str = os.getenv("ROOT_PATH", "")  # e.g. /api when served under a path prefix
     redis_url: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
+    # Optional SSO: accept "Authorization: Bearer <JWT>" from an OIDC provider (Keycloak, Okta,
+    # Entra, ...) in addition to API keys. Set OIDC_ISSUER and OIDC_AUDIENCE, plus either
+    # OIDC_JWKS_URL (fetched and cached) or OIDC_JWKS_JSON (static, for air-gapped or tests).
+    oidc_issuer: str = os.getenv("OIDC_ISSUER", "")
+    oidc_audience: str = os.getenv("OIDC_AUDIENCE", "")
+    oidc_jwks_url: str = os.getenv("OIDC_JWKS_URL", "")
+    oidc_jwks_json: str = os.getenv("OIDC_JWKS_JSON", "")
+    oidc_role_claim: str = os.getenv("OIDC_ROLE_CLAIM", "roles")  # or "groups"; dotted for nested
+    oidc_name_claim: str = os.getenv("OIDC_NAME_CLAIM", "preferred_username")
+
     log_json: bool = _flag("LOG_JSON", True)
     sentry_dsn: str = os.getenv("SENTRY_DSN", "")
     sentry_traces_sample_rate: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
@@ -59,6 +69,11 @@ class Settings:
     # Optional ITSM hand-off: POST every approved ticket here (HMAC-signed if a secret is set).
     ticket_webhook_url: str = os.getenv("TICKET_WEBHOOK_URL", "")
     ticket_webhook_secret: str = os.getenv("TICKET_WEBHOOK_SECRET", "")
+    # "generic" posts the ticket as-is; "jira" posts a Jira REST (v2) issue-create body.
+    ticket_webhook_format: str = os.getenv("TICKET_WEBHOOK_FORMAT", "generic")
+    ticket_webhook_auth: str = os.getenv("TICKET_WEBHOOK_AUTH", "")  # full Authorization header
+    jira_project_key: str = os.getenv("JIRA_PROJECT_KEY", "NOC")
+    jira_issue_type: str = os.getenv("JIRA_ISSUE_TYPE", "Incident")
 
 
 settings = Settings()

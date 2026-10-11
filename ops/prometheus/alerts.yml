@@ -100,3 +100,12 @@ groups:
         labels: {severity: warn}
         annotations:
           summary: "Approved tickets are failing to reach the ITSM system (they exist in Postgres; webhook_status records why)"
+
+      - alert: AgentFallbackRateHigh
+        expr: |
+          sum(rate(agent_investigation_total{reason=~"fallback|step_limit"}[30m]))
+            / sum(rate(agent_investigation_total[30m])) > 0.3
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "Over 30% of investigations fall back to the fixed pipeline or hit the step limit (model or tool-calling degraded)"

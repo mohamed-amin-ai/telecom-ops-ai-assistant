@@ -504,6 +504,18 @@ real bugs, each with a regression test:
   (`app/guardrails.py`), and prefer a short greppable line over `exc_info=True` for anything
   that can fire once per request.
 
+## Operations (added)
+- **SSO:** `Authorization: Bearer <OIDC JWT>` is accepted alongside API keys (`OIDC_*` settings; roles from a token claim;
+  approver name recorded in the audit log). Unit-tested with generated keys, including expiry, audience, issuer,
+  `alg=none`, key-confusion and missing-role cases; **not tested against a real identity provider**.
+- **ITSM:** `TICKET_WEBHOOK_FORMAT=jira` posts a Jira REST v2 issue (`JIRA_PROJECT_KEY`, `TICKET_WEBHOOK_AUTH`);
+  failed hand-offs are retried by `scripts/redeliver_tickets.py` with the same `Idempotency-Key`. Tested against a
+  stubbed HTTP layer, **not a real Jira**.
+- **Tracing:** OpenTelemetry spans around model turns, tool calls and ticket creation (off unless
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set); a test asserts no prompt or KPI content leaks into span attributes.
+- **Alerts:** `AgentFallbackRateHigh` (model stops using tools) with a promtool unit test.
+- **Runbook and SLOs:** `docs/oncall.md` (targets, alert -> action, disaster recovery).
+
 ## Not production grade yet
 Real Postgres-backed agent state, real persistence, versioned migrations, per-user auth
 with an append-only audit trail, Redis-backed rate limiting, TLS via Caddy, metrics/alerts,

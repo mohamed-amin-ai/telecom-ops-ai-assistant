@@ -144,3 +144,17 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warn}
             exp_annotations: {summary: "p95 time from incident opened to decision is over an hour"}
+
+  - name: agent fallback rate fires when the model stops using tools
+    interval: 1m
+    input_series:
+      - series: 'agent_investigation_total{reason="fallback"}'
+        values: '0+1x90'
+      - series: 'agent_investigation_total{reason="done"}'
+        values: '0+1x90'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AgentFallbackRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warn}
+            exp_annotations: {summary: "Over 30% of investigations fall back to the fixed pipeline or hit the step limit (model or tool-calling degraded)"}

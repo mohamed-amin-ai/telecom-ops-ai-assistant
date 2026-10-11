@@ -31,6 +31,23 @@ def kpi_profile(cell_id: str, kpi: str, lookback_hours: int = 72,
     return profile_series(get_kpis(cell_id, kpi, lookback_hours), recent_hours)
 
 
+def webhook_payload(ticket: dict) -> dict:
+    """The body sent to the ITSM endpoint. "jira" maps a ticket onto a Jira REST v2 issue; the
+    external id goes in a label (INC-42) so a retry or a human can find the issue again."""
+    if settings.ticket_webhook_format != "jira":
+        return ticket
+    alert = ticket.get("alert") or {}
+    return {"fields": {
+        "project": {"key": settings.jira_project_key},
+        "issuetype": {"name": settings.jira_issue_type},
+        "summary": f"[{ticket['id']}] {alert.get('cell_id', '?')} {alert.get('kpi', '')}"[:250],
+        "labels": [ticket["id"], "telecom-ops-assistant"],
+        "description": (
+            f"Approved by: {ticket.get('approved_by') or 'unknown'}\n"
+            f"Alert: {alert}\n\nDiagnosis:\n{ticket.get('diagnosis', '')}")[:30000],
+    }}
+
+
 def deliver_ticket_webhook(ticket: dict) -> str | None:
     """POST an approved ticket to the configured ITSM endpoint. Returns a status string, or
     None if no webhook is configured. Retries transient failures with backoff; never raises,
@@ -38,8 +55,10 @@ def deliver_ticket_webhook(ticket: dict) -> str | None:
     url = settings.ticket_webhook_url
     if not url:
         return None
-    body = json.dumps(ticket, default=str).encode()
+    body = json.dumps(webhook_payload(ticket), default=str).encode()
     headers = {"Content-Type": "application/json", "Idempotency-Key": ticket["id"]}
+    if settings.ticket_webhook_auth:
+        headers["Authorization"] = settings.ticket_webhook_auth
     if settings.ticket_webhook_secret:
         digest = hmac.new(settings.ticket_webhook_secret.encode(), body, hashlib.sha256)
         headers["X-Signature-256"] = "sha256=" + digest.hexdigest()
@@ -116,3 +135,27 @@ def get_ticket(ticket_id: str) -> dict | None:
         "alert": row[4], "diagnosis": row[5], "created_at": row[6].isoformat(),
         "approved_by": row[7], "webhook_status": row[8],
     }
+
+
+def redeliver_failed(limit: int = 50) -> dict:
+    """Dead-letter sweep: retry tickets whose hand-off failed (webhook_status 'failed:...'),
+    oldest first, with the same Idempotency-Key so a receiver that did get an earlier attempt
+    can de-duplicate. Run it on a schedule (cron / k8s CronJob) -- see docs/oncall.md."""
+    with get_pool().connection() as conn:
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM tickets WHERE webhook_status LIKE 'failed%%' ORDER BY id LIMIT %s",
+            (max(1, min(int(limit), 500)),)).fetchall()]
+    done = failed = 0
+    for pk in ids:
+        ticket = get_ticket(f"INC-{pk}")
+        if ticket is None:
+            continue
+        status = deliver_ticket_webhook(ticket)
+        if status is None:
+            return {"retried": 0, "delivered": 0, "failed": 0, "note": "no webhook configured"}
+        with get_pool().connection() as conn:
+            conn.execute("UPDATE tickets SET webhook_status = %s WHERE id = %s", (status, pk))
+        metrics.WEBHOOK.labels("delivered" if status == "delivered" else "failed").inc()
+        done += status == "delivered"
+        failed += status != "delivered"
+    return {"retried": len(ids), "delivered": done, "failed": failed}

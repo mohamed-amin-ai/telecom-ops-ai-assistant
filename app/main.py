@@ -21,6 +21,7 @@ from .guardrails import check_input
 from .observability import request_id_var, setup_logging, setup_sentry
 from .rag import answer
 from .ratelimit import allow
+from .tracing import setup_tracing
 
 setup_logging()
 setup_sentry()
@@ -33,6 +34,7 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    setup_tracing()  # no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set
     yield
     close_pool()  # release DB connections cleanly on SIGTERM instead of dropping them
 

@@ -4,6 +4,7 @@ Keys are random high-entropy tokens stored as SHA-256 hashes (never in plaintext
 ordered: operator (ask, open incidents) < approver (also approve/reject) < admin (also read
 the audit log). A revoked key stops working within CACHE_TTL seconds."""
 import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -57,6 +58,55 @@ def authenticate(key: str) -> Principal | None:
     return p
 
 
+_jwk_client = None
+
+
+def _signing_key(token: str):
+    """The public key that signed `token`: static JWKS if configured, else fetched (and cached
+    by PyJWT) from OIDC_JWKS_URL."""
+    global _jwk_client
+    import jwt
+
+    if settings.oidc_jwks_json:
+        keys = jwt.PyJWKSet.from_dict(json.loads(settings.oidc_jwks_json)).keys
+        kid = jwt.get_unverified_header(token).get("kid")
+        for k in keys:
+            if kid is None or k.key_id == kid:
+                return k.key
+        raise jwt.InvalidKeyError("no matching signing key")
+    if _jwk_client is None:
+        _jwk_client = jwt.PyJWKClient(settings.oidc_jwks_url, cache_keys=True, lifespan=3600)
+    return _jwk_client.get_signing_key_from_jwt(token).key
+
+
+def _claim(claims: dict, dotted: str):
+    cur = claims
+    for part in dotted.split("."):
+        cur = cur.get(part) if isinstance(cur, dict) else None
+    return cur
+
+
+def authenticate_bearer(token: str) -> Principal | None:
+    """Verify an OIDC access token (signature, expiry, issuer, audience; asymmetric algorithms
+    only) and map its role claim to the highest of operator/approver/admin. None if invalid or
+    if it carries no recognised role."""
+    import jwt
+
+    try:
+        claims = jwt.decode(
+            token, _signing_key(token), algorithms=["RS256", "RS384", "RS512", "ES256", "ES384"],
+            audience=settings.oidc_audience, issuer=settings.oidc_issuer,
+            options={"require": ["exp", "iss", "aud"]})
+    except (jwt.PyJWTError, ValueError, KeyError) as e:
+        log.info("bearer token rejected: %s", type(e).__name__)
+        return None
+    raw = _claim(claims, settings.oidc_role_claim) or []
+    roles = [raw] if isinstance(raw, str) else [r for r in raw if isinstance(r, str)]
+    best = max((r for r in roles if r in ROLE_RANK), key=ROLE_RANK.get, default=None)
+    name = str(claims.get(settings.oidc_name_claim) or claims.get("email") or claims["sub"])
+    return Principal(name, best) if best else None
+
+
 def client_ip(request: Request) -> str:
     """The real client address. With N trusted proxies in front, each appends the peer it saw
     to X-Forwarded-For, so the client is the Nth entry from the right; anything a client put
@@ -74,9 +124,17 @@ def client_ip(request: Request) -> str:
 def require(role: str):
     """FastAPI dependency: authenticate, enforce a minimum role, apply the per-user limit."""
 
-    def dep(request: Request, x_api_key: str | None = Header(default=None)) -> Principal:
+    def dep(request: Request, x_api_key: str | None = Header(default=None),
+            authorization: str | None = Header(default=None)) -> Principal:
+        bearer = (authorization[7:].strip() if authorization
+                  and authorization[:7].lower() == "bearer " else "")
         if not settings.auth_required:
             p = Principal("anonymous", "admin")
+        elif bearer and settings.oidc_issuer and not x_api_key:
+            p = authenticate_bearer(bearer)
+            if p is None:
+                metrics.AUTH_FAILURES.labels("invalid_token").inc()
+                raise HTTPException(status_code=401, detail="invalid or unauthorised token")
         else:
             if not x_api_key:
                 metrics.AUTH_FAILURES.labels("missing_key").inc()
