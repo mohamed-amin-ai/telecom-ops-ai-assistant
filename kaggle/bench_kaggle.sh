@@ -96,12 +96,22 @@ export AGENT_MODE=agentic TOOLS_VIA_MCP=1 LOG_JSON=0
 
 step "Start API"
 pkill -f "uvicorn app.main" 2>/dev/null || true
+# Wait for the old API (from an earlier run) to release the port; otherwise /health below can be
+# answered by the dying old process while the new one fails to bind, and every request is refused.
+for _ in $(seq 1 20); do curl -fsS localhost:8001/health >/dev/null 2>&1 || break; sleep 1; done
 nohup "$PY" -m uvicorn app.main:app --host 0.0.0.0 --port 8001 > "$W/api.log" 2>&1 &
-wait_http localhost:8001/health api 24
+API_PID=$!
+wait_http localhost:8001/health api 36 "$API_PID" || { echo "--- api.log (tail) ---"; tail -60 "$W/api.log"; exit 1; }
 
 step "Benchmark"
 GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader | sort | uniq -c | tr -s ' ' | paste -sd, -)
 "$PY" scripts/bench_incident.py --url http://localhost:8001 --runs "$RUNS" --warmup 2 \
   --label "${GPU_NAMES}; vLLM ${VLLM_VERSION} TP=${GPUS}; ${MODEL}; agentic+MCP" \
   --out "$W/bench_result.json" | tee "$W/bench_output.txt"
-echo; echo "Results: $W/bench_result.json   Logs: $W/vllm.log $W/api.log"
+step "Agent eval (ground-truth detection, tool use, stability, LLM judge)"
+# Judge = the same 7B model here (only one model fits). Treat the judge numbers as indicative.
+"$PY" -m evals.run_agent_eval --url http://localhost:8001 --repeats "${EVAL_REPEATS:-3}" --judge \
+  --label "${GPU_NAMES}; vLLM ${VLLM_VERSION} TP=${GPUS}; ${MODEL}; agentic+MCP" \
+  --out "$W/agent_eval.json" | tee "$W/agent_eval_output.txt"
+
+echo; echo "Results: $W/bench_result.json   Agent eval: $W/agent_eval.json   Logs: $W/vllm.log $W/api.log"

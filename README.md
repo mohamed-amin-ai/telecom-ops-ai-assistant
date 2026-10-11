@@ -366,14 +366,28 @@ Measured in CI (non-gating) on small local models:
 
 | model | first tool | args | no write | valid calls |
 |---|---|---|---|---|
-| qwen2.5:1.5b | 76.7% (62-87) | 90.9% (n=22) | 100% | 97.7% |
-| qwen2.5:3b | 60.5% (46-74) | 100% (n=13) | 100% | 100% |
+| qwen2.5:1.5b, before prompt fix | 76.7% (62-87) | 90.9% (n=22) | 100% | 97.7% |
+| qwen2.5:1.5b, after | 93.0% (81-98) | 82.1% (n=28) | 100% | 93.0% |
+| qwen2.5:3b, before prompt fix | 60.5% (46-74) | 100% (n=13) | 100% | 100% |
+| qwen2.5:3b, after | 95.3% (85-99) | 89.3% (n=28) | 100% | 100% |
 
-Both models never attempted a write. The 3B model always opens alert triage with `get_kpis` instead of
-`kpi_profile` (0/11), so it is *worse* than 1.5B on triage; the safety net exists for exactly this.
-Caveats: the scenarios are mine, the sample is small, and these are regression/comparison numbers, not production accuracy.
+The "before" rows opened alert triage with `get_kpis` instead of `kpi_profile` (3B: 0/11 correct). The fix was an explicit
+procedure in the system prompt (kpi_profile, then search_runbooks, then ticket_history; get_kpis only for raw values) and
+clearer tool descriptions. After it, alert triage is 100% for both models. Remaining misses: 3B calls `search_runbooks` on
+2 of 3 no-tool questions; 1.5B misses 3 of 8 knowledge questions.
+**This is partly tuned to its own test:** I wrote the fix after seeing which scenarios failed, on the same 43 scenarios (I did
+not copy their text into the prompt, but treat the "after" numbers as optimistic until a fresh held-out set is scored).
+Neither model attempted a write in any run. Caveats: the scenarios are mine, the sample is small, and these are regression/comparison numbers, not production accuracy.
 Real tool calling was exercised end to end only against a fake LLM server that emulates `tool_use` (full stack in CI)
 and local Ollama models. It has not been measured on a larger model or a vLLM-served one.
+
+### End-to-end agent eval (`python -m evals.run_agent_eval --url ... --repeats 3 --judge`)
+Scores whole investigations on the real tools and data, with ground truth from the injected faults (3 faulty
+cell/KPI pairs, 6 healthy controls, each alerting): detection recall, false-alarm rate, whether the *model itself*
+called each tool (vs the safety net), safety-net share, bad calls, run-to-run stability (Jaccard of tool sets), latency,
+and optionally an LLM judge (consistent with the evidence, grounded, actionable, severity stated), all with Wilson
+intervals. Nine pairs is small and the data is synthetic; the judge is the same model on Kaggle. Not run in CI (needs a
+real stack and model); `kaggle/bench_kaggle.sh` runs it after the latency benchmark.
 
 ### Measured on 2 GPUs (Kaggle, 2x Tesla T4, vLLM 0.9.2 tensor-parallel 2, Qwen2.5-7B-Instruct, agentic + MCP)
 `kaggle/bench_kaggle.sh` + `scripts/bench_incident.py`, 3 scenarios x 10 timed runs after 2 warm-ups, request to

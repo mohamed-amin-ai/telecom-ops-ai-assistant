@@ -82,6 +82,11 @@ def main(argv=None):
     ap.add_argument("--out", default="")
     a = ap.parse_args(argv)
 
+    code, body = call("GET", f"{a.url}/health", key=a.key, timeout=10)
+    if code != 200:
+        print(f"API not reachable at {a.url}/health ({code}: {str(body)[:120]}); not running the benchmark.")
+        return 2
+
     rows = []
     for i in range(a.warmup + a.runs):
         for cell, kpi, desc in SCENARIOS:
