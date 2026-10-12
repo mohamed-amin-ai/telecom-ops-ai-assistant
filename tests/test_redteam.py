@@ -1,6 +1,6 @@
 """Ratchet tests for the deterministic guardrail layer. The floors below are what was
 MEASURED, not aspirational: they stop regressions, they don't claim the rules are good.
-Held-out attack detection is under 50% -- regexes alone are not a defense (see README)."""
+Held-out attack detection is under 50% -- regexes alone are not a defense (see docs/evaluation.md)."""
 import json
 import pathlib
 

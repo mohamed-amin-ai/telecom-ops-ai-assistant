@@ -1,5 +1,5 @@
 """Fast, no-network tests for run_ragas.py's pure logic. The actual ragas.evaluate() call
-needs a real judge model and is verified separately (see README: "RAGAS" and the `live` CI
+needs a real judge model and is verified separately (see docs/evaluation.md: "RAGAS" and the `live` CI
 job) -- that's inherently not something a fast unit test can meaningfully check."""
 import json
 

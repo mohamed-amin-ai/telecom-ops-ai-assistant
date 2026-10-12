@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -21,7 +21,7 @@ jobs:
   # Real promtool and real Caddy, no stack needed: the alert rules are unit-tested (each alert
   # has a case where it must fire and one where it must not) and the proxy config is validated.
   ops-config:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Alert rules - syntax and unit tests (promtool)
@@ -43,7 +43,7 @@ jobs:
   # embeddings. Needs internet (the dev sandbox has none; GitHub runners do), so this is the
   # only place the download/convert/ingest path is exercised against the real thing.
   real-3gpp:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash  # GitHub's explicit bash adds pipefail, so `cmd | tee` can fail the step
@@ -121,7 +121,7 @@ jobs:
   # Auth is on (AUTH_REQUIRED=1) with three bootstrapped test users, one per role, so the
   # whole auth/audit/approval-lock system runs for real here too, not just in unit tests.
   stack:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     timeout-minutes: 35
     steps:
@@ -264,7 +264,7 @@ jobs:
   # Grafana. Uses the fake LLM server so it needs no key. Every claim the README makes
   # about the proxy and the metrics pipeline is asserted by scripts/prod_smoke.sh.
   prod-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     timeout-minutes: 40
     steps:
@@ -358,7 +358,7 @@ jobs:
   # so auth is left off here (AUTH_REQUIRED=0) to keep this job's scope narrow and fast;
   # guardrails run on rules only too (GUARD_LLM=0), for the same reason.
   live-ollama:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: stack
     timeout-minutes: 60
     steps:
@@ -445,7 +445,7 @@ jobs:
   # report job pools them into means with bootstrap intervals, counting (not hiding)
   # unparseable rows. Pushes to main and manual dispatch only: it is slow (~40 min).
   ragas-ollama:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: stack
     if: github.event_name != 'pull_request'
     timeout-minutes: 80
@@ -500,7 +500,7 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile local down -v
 
   ragas-report:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: ragas-ollama
     if: always() && github.event_name != 'pull_request' && needs.ragas-ollama.result != 'skipped'
     steps:
