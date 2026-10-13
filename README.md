@@ -39,7 +39,7 @@ intervals and caveats: [docs/evaluation.md](docs/evaluation.md).
 | Writes attempted by the 1.5B and 3B models | 0 in 85 scenarios (no write tool is exposed to any model) |
 | Time per incident, request to "awaiting approval" | median 25 s, p95 29 s (30 runs, 30/30 succeeded, min 21 s, max 30 s) on 2x T4; two other sessions gave medians of 30 s and 37 s |
 | Prompt-injection red team, 14 unseen attacks / 20 benign questions | 71% (10/14) blocked with the LLM classifier, 1/20 benign wrongly blocked; rules alone 29% (4/14). Small sample |
-| Tests | 217 tests; 11-job CI incl. real Postgres/Redis/Qdrant stack, UI end-to-end, soak test, backup/restore, rollback |
+| Tests | 224 tests; 11-job CI incl. real Postgres/Redis/Qdrant stack, UI end-to-end, soak test, backup/restore, rollback |
 
 ## Quick start
 

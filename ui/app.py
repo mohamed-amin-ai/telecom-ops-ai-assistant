@@ -10,6 +10,8 @@ import chainlit as cl
 import httpx
 
 API = os.getenv("API_URL", "http://api:8000")
+# An incident makes several model calls; on a CPU-only 7B setup that takes minutes.
+TIMEOUT_S = float(os.getenv("UI_TIMEOUT_S", "900"))
 HELP = ("Ask a question about runbooks, or open an incident:\n\n"
         "`/incident CELL_001 prb_utilization_pct PRB above 85%`")
 
@@ -41,7 +43,7 @@ async def _post(path: str, payload: dict) -> dict:
     key = _key()
     if not key:
         raise PermissionError("session expired, please sign in again")
-    async with httpx.AsyncClient(timeout=180) as c:
+    async with httpx.AsyncClient(timeout=TIMEOUT_S) as c:
         r = await c.post(f"{API}{path}", json=payload, headers={"X-API-Key": key})
         r.raise_for_status()
         return r.json()
@@ -67,6 +69,10 @@ async def on_message(msg: cl.Message):
         await cl.Message(content=str(e)).send()
     except httpx.HTTPStatusError as e:
         await cl.Message(content=f"API error {e.response.status_code}: {e.response.text[:300]}").send()
+    except httpx.TransportError as e:
+        await cl.Message(content=(
+            f"No answer from the API ({type(e).__name__}) after at most {TIMEOUT_S:.0f}s. The model "
+            "may be too slow on this hardware: try a smaller model or raise UI_TIMEOUT_S.")).send()
 
 
 async def incident(text: str):

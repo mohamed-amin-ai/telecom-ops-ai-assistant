@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from datetime import UTC, datetime
 
@@ -125,14 +126,24 @@ def create_ticket(thread_id: str, alert: dict, diagnosis: str,
     return ticket
 
 
+_SEVERITY = re.compile(r"Severity:\s*(P[1-4]|undetermined)", re.IGNORECASE)
+
+
+def _severity_of(diagnosis: str) -> str | None:
+    m = _SEVERITY.findall(diagnosis or "")
+    return m[-1].upper() if m and m[-1].upper().startswith("P") else (m[-1].lower() if m else None)
+
+
 def ticket_history(cell_id: str, limit: int = 5) -> list[dict]:
-    """Read-only: the most recent past tickets for a cell (newest first)."""
+    """Read-only: the most recent past tickets for a cell (newest first). Returns facts only
+    (id, KPI, time, severity, approver), not the stored diagnosis text: a small model repeats
+    an earlier diagnosis, including its numbers, as if it described the current incident."""
     limit = max(1, min(int(limit), 10))
     with get_pool().connection() as conn:
         rows = conn.execute(
             "SELECT id, kpi, diagnosis, created_at, approved_by FROM tickets "
             "WHERE cell_id = %s ORDER BY created_at DESC LIMIT %s", (cell_id, limit)).fetchall()
-    return [{"id": f"INC-{r[0]}", "kpi": r[1], "diagnosis": (r[2] or "")[:600],
+    return [{"id": f"INC-{r[0]}", "kpi": r[1], "severity": _severity_of(r[2] or ""),
              "created_at": r[3].isoformat(), "approved_by": r[4]} for r in rows]
 
 
