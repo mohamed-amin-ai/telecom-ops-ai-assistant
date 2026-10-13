@@ -1,0 +1,6 @@
+# Shell scripts must keep LF line endings: a CRLF checkout on Windows breaks the shebang
+# ("exec ...entrypoint.sh: no such file or directory") inside the Linux container.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.gif binary
+*.png binary

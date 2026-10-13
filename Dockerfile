@@ -11,6 +11,6 @@ RUN useradd --create-home --uid 10001 app \
  && mkdir -p /cache /tmp/prom \
  && chown -R app:app /cache /tmp/prom /app
 COPY --chown=app:app . .
-RUN chmod +x scripts/entrypoint.sh
+RUN sed -i "s/\r$//" scripts/entrypoint.sh && chmod +x scripts/entrypoint.sh
 USER app
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
