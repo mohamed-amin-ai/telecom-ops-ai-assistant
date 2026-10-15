@@ -5,6 +5,7 @@ approvals in the audit log are attributed to the real person, not to a shared UI
 
 Plain text -> /ask.  '/incident <cell_id> <kpi> [description]' -> agent."""
 import os
+import re
 
 import chainlit as cl
 import httpx
@@ -13,7 +14,7 @@ API = os.getenv("API_URL", "http://api:8000")
 # An incident makes several model calls; on a CPU-only 7B setup that takes minutes.
 TIMEOUT_S = float(os.getenv("UI_TIMEOUT_S", "900"))
 HELP = ("Ask a question about runbooks, or open an incident:\n\n"
-        "`/incident CELL_001 prb_utilization_pct PRB above 85%`")
+        "`/incident CELL_002 rrc_setup_success_rate RRC setup success rate below 98.5%`")
 
 # Keys live only in this process's memory (never in the browser's JWT). After a UI restart
 # users simply sign in again.
@@ -49,9 +50,18 @@ async def _post(path: str, payload: dict) -> dict:
         return r.json()
 
 
-@cl.on_chat_start
-async def start():
-    await cl.Message(content=HELP).send()
+@cl.set_starters
+async def starters(_user=None):
+    # Shown centred on the empty chat; a click sends the message. They replace the old
+    # welcome message (a message would hide them).
+    return [
+        cl.Starter(label="RRC setup success below 98.5%",
+                   message="/incident CELL_002 rrc_setup_success_rate RRC setup success rate below 98.5%"),
+        cl.Starter(label="Handover success below 97%",
+                   message="/incident CELL_003 handover_success_rate Handover success rate below 97%"),
+        cl.Starter(label="Ask the runbooks",
+                   message="What is the ping-pong handover threshold?"),
+    ]
 
 
 @cl.on_message
@@ -75,6 +85,14 @@ async def on_message(msg: cl.Message):
             "may be too slow on this hardware: try a smaller model or raise UI_TIMEOUT_S.")).send()
 
 
+_SEV = re.compile(r"Severity:\s*(P[1-4][^\n]*|undetermined[^\n]*)", re.IGNORECASE)
+
+
+def _severity(text: str) -> str:
+    found = _SEV.findall(text or "")
+    return found[-1].strip() if found else "not stated"
+
+
 async def incident(text: str):
     parts = text.split(maxsplit=3)
     if len(parts) < 3:
@@ -83,12 +101,18 @@ async def incident(text: str):
     payload = {"cell_id": parts[1], "kpi": parts[2],
                "description": parts[3] if len(parts) > 3 else ""}
     out = await _post("/incident", payload)
+    async with cl.Step(name="Investigation", type="tool") as step:
+        step.output = "\n".join(f"- {t['tool']}: {t['outcome']}"
+                                for t in out.get("investigation") or []) or "no tools recorded"
     await cl.Message(content=f"**KPI profile:** `{out['profile']}`\n\n"
                              f"**Diagnosis:**\n{out['diagnosis']}").send()
     if out["status"] != "awaiting_approval":
         return
     res = await cl.AskActionMessage(
-        content="Create a ticket and draft the incident report?",
+        content=(f"### Approval needed\n"
+                 f"**Proposed action:** create a ticket for `{parts[1]}` / `{parts[2]}` and draft "
+                 f"the incident report\n\n**Severity:** {_severity(out['diagnosis'])}\n\n"
+                 "Nothing is created until an approver confirms."),
         actions=[cl.Action(name="approve", payload={"approve": True}, label="Approve"),
                  cl.Action(name="reject", payload={"approve": False}, label="Reject")],
     ).send()
@@ -99,7 +123,15 @@ async def incident(text: str):
         who = "approver role required" if e.response.status_code == 403 else e.response.text[:200]
         await cl.Message(content=f"Decision not recorded ({e.response.status_code}): {who}").send()
         return
-    if approve:
-        await cl.Message(content=f"Ticket `{done['ticket']['id']}` created.\n\n{done['report']}").send()
-    else:
+    if not approve:
         await cl.Message(content="Rejected. No ticket created.").send()
+        return
+    tk = done["ticket"]
+    await cl.Message(content=f"**Incident report**\n\n{done['report']}").send()
+    # The card is the last thing on screen, so the outcome is visible without scrolling.
+    await cl.Message(content=(
+        f"### Ticket `{tk['id']}` created\n\n| Field | Value |\n|---|---|\n"
+        f"| Cell / KPI | `{parts[1]}` / `{parts[2]}` |\n"
+        f"| Severity | {_severity(out['diagnosis'])} |\n"
+        f"| Approved by | {tk.get('approved_by') or 'n/a'} |\n"
+        f"| Created | {tk.get('created_at', '')[:19].replace('T', ' ')} UTC |")).send()

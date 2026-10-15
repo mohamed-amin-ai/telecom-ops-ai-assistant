@@ -130,11 +130,11 @@ jobs:
         run: |
           cp .env.example .env
           {
-            echo "ANTHROPIC_API_KEY=ci-fake-key"
-            echo "ANTHROPIC_API_BASE=http://fake-llm:8099"
-            echo "LLM_MODEL=anthropic/ci-fake-model"
-            echo "JUDGE_MODEL=anthropic/ci-fake-model"
-            echo "GUARD_MODEL=anthropic/ci-fake-model"
+            echo "VLLM_API_KEY=ci-fake-key"
+            echo "VLLM_BASE_URL=http://fake-llm:8099/v1"
+            echo "LLM_MODEL=hosted_vllm/ci-fake-model"
+            echo "JUDGE_MODEL=hosted_vllm/ci-fake-model"
+            echo "GUARD_MODEL=hosted_vllm/ci-fake-model"
             echo "RATE_LIMIT_PER_MIN=1000"
             echo "IP_RATE_LIMIT_PER_MIN=1000"
             echo "LANGFUSE_PUBLIC_KEY=pk-lf-ci"
@@ -274,11 +274,11 @@ jobs:
           HASH=$(docker run --rm caddy:2.8-alpine caddy hash-password --plaintext 'grafana-basic-pass')
           cp .env.example .env
           {
-            echo "ANTHROPIC_API_KEY=ci-fake-key"
-            echo "ANTHROPIC_API_BASE=http://fake-llm:8099"
-            echo "LLM_MODEL=anthropic/ci-fake-model"
-            echo "JUDGE_MODEL=anthropic/ci-fake-model"
-            echo "GUARD_MODEL=anthropic/ci-fake-model"
+            echo "VLLM_API_KEY=ci-fake-key"
+            echo "VLLM_BASE_URL=http://fake-llm:8099/v1"
+            echo "LLM_MODEL=hosted_vllm/ci-fake-model"
+            echo "JUDGE_MODEL=hosted_vllm/ci-fake-model"
+            echo "GUARD_MODEL=hosted_vllm/ci-fake-model"
             echo "RATE_LIMIT_PER_MIN=1000"
             echo "IP_RATE_LIMIT_PER_MIN=1000"
             echo "LANGFUSE_NEXTAUTH_SECRET=ci-langfuse-nextauth-secret"

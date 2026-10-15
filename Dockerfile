@@ -11,6 +11,9 @@ RUN useradd --create-home --uid 10001 app \
  && mkdir -p /cache /tmp/prom \
  && chown -R app:app /cache /tmp/prom /app
 COPY --chown=app:app . .
+# App title for the chat UI (the generated .chainlit/ folder itself is not in the image).
+RUN mkdir -p /app/.chainlit && cp ui/chainlit.toml /app/.chainlit/config.toml \
+ && chown -R app:app /app/.chainlit
 RUN sed -i "s/\r$//" scripts/entrypoint.sh && chmod +x scripts/entrypoint.sh
 USER app
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]

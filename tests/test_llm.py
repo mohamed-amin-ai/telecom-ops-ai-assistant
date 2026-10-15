@@ -32,7 +32,7 @@ def test_drops_temperature_on_unsupported_params_error():
         return _Resp("ok")
 
     with patch("app.llm.litellm.completion", side_effect=fake_completion):
-        r = _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}],
+        r = _complete("ollama_chat/strict-temp-model", [{"role": "user", "content": "hi"}],
                       {"temperature": 0})
     assert r.choices[0].message.content == "ok"
     assert len(calls) == 2
@@ -46,7 +46,7 @@ def test_unrelated_unsupported_param_error_is_not_swallowed():
     with patch("app.llm.litellm.completion", side_effect=fake_completion), pytest.raises(
         litellm.exceptions.UnsupportedParamsError
     ):
-        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}], {"top_k": 1})
+        _complete("ollama_chat/strict-temp-model", [{"role": "user", "content": "hi"}], {"top_k": 1})
 
 
 def test_no_retry_when_temperature_not_set():
@@ -56,7 +56,7 @@ def test_no_retry_when_temperature_not_set():
     with patch("app.llm.litellm.completion", side_effect=fake_completion), pytest.raises(
         litellm.exceptions.UnsupportedParamsError
     ):
-        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}], {})
+        _complete("ollama_chat/strict-temp-model", [{"role": "user", "content": "hi"}], {})
 
 
 def test_chat_raises_primary_error_when_fallback_also_fails():
@@ -89,7 +89,7 @@ def test_complete_defaults_num_retries_for_transient_errors():
         return _Resp("ok")
 
     with patch("app.llm.litellm.completion", side_effect=fake_completion):
-        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}], {})
+        _complete("ollama_chat/strict-temp-model", [{"role": "user", "content": "hi"}], {})
     assert seen.get("num_retries") == 3
 
 
@@ -103,7 +103,7 @@ def test_complete_respects_explicit_num_retries():
         return _Resp("ok")
 
     with patch("app.llm.litellm.completion", side_effect=fake_completion):
-        _complete("anthropic/strict-temp-model", [{"role": "user", "content": "hi"}],
+        _complete("ollama_chat/strict-temp-model", [{"role": "user", "content": "hi"}],
                   {"num_retries": 5})
     assert seen.get("num_retries") == 5
 
@@ -169,7 +169,7 @@ def test_route_sends_vllm_models_to_vllm(monkeypatch):
     r = llm.route("hosted_vllm/Qwen/Qwen2.5-7B-Instruct")
     assert r["api_base"] == llm.settings.vllm_base_url
     assert r["api_key"]  # never empty: the OpenAI SDK refuses an empty key
-    assert llm.route("anthropic/strict-temp-model") == {}
+    assert llm.route("ollama_chat/strict-temp-model") == {}
     assert llm.route("ollama/qwen2.5:7b-instruct") == {}
 
 

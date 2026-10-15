@@ -46,10 +46,17 @@ def test_severity_of_reads_last_severity_line():
 
 def test_threshold_check_not_reached():
     out = agent.threshold_check({"description": "PRB above 85%"}, {"recent_max": 76.77})
-    assert "did NOT reach" in out and "85" in out
+    assert "NOT above" in out and "85" in out
 
 
 def test_threshold_check_reached_and_absent():
-    assert "reached the alert" in agent.threshold_check({"description": "PRB above 85%"}, {"recent_max": 90})
+    assert "is above the alert" in agent.threshold_check({"description": "PRB above 85%"}, {"recent_max": 90})
     assert agent.threshold_check({"description": "slow"}, {"recent_max": 90}) == ""
     assert agent.threshold_check({"description": "above 85%"}, None) == ""
+
+
+def test_threshold_check_below_direction():
+    crossed = agent.threshold_check({"description": "RRC success below 98.5%"}, {"recent_min": 91.2})
+    assert "is below the alert threshold 98.5" in crossed
+    ok = agent.threshold_check({"description": "RRC success below 98.5%"}, {"recent_min": 99.1})
+    assert "NOT below" in ok

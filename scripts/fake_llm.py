@@ -1,4 +1,4 @@
-"""Minimal fake LLM server (Messages-style wire format) for CI. It lets the REAL LiteLLM code path
+"""Minimal fake LLM server (OpenAI-compatible chat-completions wire format) for CI. It lets the REAL LiteLLM code path
 (request formation, response parsing, guardrail classifier JSON, judge JSON, Langfuse
 callbacks) run without an API key. It does not test model quality."""
 import json
@@ -22,9 +22,8 @@ KPI = re.compile(r"'kpi':\s*'([^']+)'")
 
 def tool_turn(req: dict, first_user: str):
     """Scripted tool use for the investigation agent: kpi_profile, search_runbooks,
-    ticket_history, then a text summary. Returns content blocks."""
-    done = sum(1 for m in req.get("messages", []) if isinstance(m.get("content"), list)
-               for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result")
+    ticket_history, then a text summary. Returns (text, tool_calls)."""
+    done = sum(1 for m in req.get("messages", []) if m.get("role") == "tool")
     cell = (CELL.search(first_user) or [None, "CELL_001"])[1]
     kpi = (KPI.search(first_user) or [None, "prb_utilization_pct"])[1]
     plan = [("kpi_profile", {"cell_id": cell, "kpi": kpi}),
@@ -32,9 +31,9 @@ def tool_turn(req: dict, first_user: str):
             ("ticket_history", {"cell_id": cell})]
     if done < len(plan):
         name, args = plan[done]
-        return [{"type": "tool_use", "id": f"toolu_{done}", "name": name, "input": args}], "tool_use"
-    return [{"type": "text", "text": "Investigation summary: the KPI is abnormal; "
-                                     "runbook and history reviewed."}], "end_turn"
+        return "", [{"id": f"call_{done}", "type": "function",
+                     "function": {"name": name, "arguments": json.dumps(args)}}]
+    return ("Investigation summary: the KPI is abnormal; runbook and history reviewed.", [])
 
 
 def reply(system: str, user: str) -> str:
@@ -76,21 +75,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(n) or b"{}")
-        system = _text(req.get("system", ""))
-        users = [m for m in req.get("messages", []) if m.get("role") == "user"]
+        msgs = req.get("messages", [])
+        system = " ".join(_text(m.get("content") or "") for m in msgs if m.get("role") == "system")
+        users = [m for m in msgs if m.get("role") == "user"]
         user = _text(users[-1]["content"]) if users else ""
+        tool_calls = []
         if req.get("tools") and "investigation agent" in system:
             first = _text(users[0]["content"]) if users else ""
-            blocks, stop = tool_turn(req, first)
-            text = " ".join(b.get("text", "") for b in blocks)
+            text, tool_calls = tool_turn(req, first)
         else:
-            text, stop = reply(system, user), "end_turn"
-            blocks = [{"type": "text", "text": text}]
+            text = reply(system, user)
+        message = {"role": "assistant", "content": text or None}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        prompt_tokens, completion_tokens = max(1, len(user) // 4), max(1, len(text) // 4)
         self._send(200, {
-            "id": "msg_fake", "type": "message", "role": "assistant",
-            "model": req.get("model", "fake"), "stop_reason": stop, "stop_sequence": None,
-            "content": blocks,
-            "usage": {"input_tokens": max(1, len(user) // 4), "output_tokens": max(1, len(text) // 4)},
+            "id": "chatcmpl-fake", "object": "chat.completion", "created": 0,
+            "model": req.get("model", "fake"),
+            "choices": [{"index": 0, "message": message,
+                         "finish_reason": "tool_calls" if tool_calls else "stop"}],
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                      "total_tokens": prompt_tokens + completion_tokens},
         })
 
     def log_message(self, *a):  # keep CI logs quiet

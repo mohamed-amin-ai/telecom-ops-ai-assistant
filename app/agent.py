@@ -86,20 +86,27 @@ def fix_severity(text: str) -> str:
     return _PLACEHOLDER_SEV.sub("Severity: undetermined (the model gave no reason)", text)
 
 
-_THRESHOLD = re.compile(r"(?:above|over|exceed\w*|>=?)\s*(\d+(?:\.\d+)?)\s*%?", re.IGNORECASE)
+_THRESHOLD = re.compile(
+    r"(above|over|exceed\w*|>=?|below|under|less than|<=?)\s*(\d+(?:\.\d+)?)\s*%?", re.IGNORECASE)
+_LOWER = ("below", "under", "less than", "<")
 
 
 def threshold_check(alert: dict, profile) -> str:
-    """Deterministic fact for the prompt: did the recent values reach the threshold quoted in
+    """Deterministic fact for the prompt: did the recent values cross the threshold quoted in
     the alert text? A small model otherwise says '65% is above the 85% threshold'."""
     m = _THRESHOLD.search(str(alert.get("description", "")))
-    peak = profile.get("recent_max") if isinstance(profile, dict) else None
-    if not m or not isinstance(peak, int | float):
+    if not m or not isinstance(profile, dict):
         return ""
-    limit = float(m.group(1))
-    if peak >= limit:
-        return f"Threshold check: the recent maximum {peak} reached the alert threshold {limit:g}.\n"
-    return (f"Threshold check: the recent maximum {peak} did NOT reach the alert threshold "
+    lower = m.group(1).lower().startswith(_LOWER)
+    value = profile.get("recent_min" if lower else "recent_max")
+    if not isinstance(value, int | float):
+        return ""
+    limit = float(m.group(2))
+    crossed = value <= limit if lower else value >= limit
+    word, side = ("minimum", "below") if lower else ("maximum", "above")
+    if crossed:
+        return f"Threshold check: the recent {word} {value} is {side} the alert threshold {limit:g}.\n"
+    return (f"Threshold check: the recent {word} {value} is NOT {side} the alert threshold "
             f"{limit:g}; say so, and do not apply severity rules that need the threshold crossed.\n")
 
 
@@ -115,7 +122,7 @@ def diagnose_node(s: State) -> dict:
     messages = [
         {"role": "system", "content": (
             "You are a NOC engineer. Answer with exactly these sections, in this order, each as a "
-            "plain heading followed by its text, and no title line: Root cause, Confidence, Next "
+            "bold heading line such as **Root cause** followed by its text, and no title line: Root cause, Confidence, Next "
             "actions (numbered), Data missing (bullets, or 'none'), then the Severity line. "
             "Ground it in the KPI profile and runbook context. Every statement taken from "
             "the runbook must end with the tag of its chunk, copied exactly as it appears in the "

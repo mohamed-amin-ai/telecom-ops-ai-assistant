@@ -98,7 +98,7 @@ with sync_playwright() as p:
         print("PASS  UI question answered with sources")
 
         send(page, box, "/incident CELL_001 prb_utilization_pct PRB above 85%")
-        page.get_by_text("Create a ticket and draft the incident report?").wait_for(timeout=120000)
+        page.get_by_text("Approval needed").wait_for(timeout=120000)
         page.get_by_role("button", name="Approve").click()
         page.locator("text=/Ticket .* created/").wait_for(timeout=120000)
         print("PASS  UI incident flow: diagnosis, approval, ticket (as the approver)")
@@ -110,7 +110,7 @@ with sync_playwright() as p:
             box = page.locator("#chat-input")
             settle(page)
             send(page, box, "/incident CELL_002 rrc_setup_success_rate RRC failures")
-            page.get_by_text("Create a ticket and draft the incident report?").wait_for(timeout=120000)
+            page.get_by_text("Approval needed").wait_for(timeout=120000)
             page.get_by_role("button", name="Approve").click()
             page.get_by_text("approver role required").wait_for(timeout=60000)
             print("PASS  UI: an operator cannot approve (403 from the API, surfaced to the user)")
