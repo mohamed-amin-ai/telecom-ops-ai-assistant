@@ -6,7 +6,9 @@
 
 Splits: 'dev' is what the rules were tuned against, so its numbers are optimistic.
 'heldout' was written before the last rule change and is the honest estimate -- but once you
-tune against it, it stops being held out. Write new held-out cases before trusting a number."""
+tune against it, it stops being held out. Write new held-out cases before trusting a number.
+'fresh2' (44 cases) was written after the classifier prompt gained examples for indirect asks, paused
+policies, role-play and claimed approvals; it has not been tuned against. Same single author."""
 import argparse
 import json
 import os
