@@ -40,7 +40,7 @@ intervals and caveats: [docs/evaluation.md](docs/evaluation.md).
 | Tool selection, 1.5B / 3B models | 86% / 93% on a **held-out** set of 42 unseen scenarios (93% / 95% on the tuning set) |
 | Writes attempted by the 1.5B and 3B models | 0 in 85 scenarios (no write tool is exposed to any model) |
 | Time per incident, request to "awaiting approval" | median 25 s, p95 29 s (30 runs, 30/30 succeeded, min 21 s, max 30 s) on 2x T4; two other sessions gave medians of 30 s and 37 s |
-| Prompt-injection red team, 14 unseen attacks / 20 benign questions | 71% (10/14) blocked with the LLM classifier, 1/20 benign wrongly blocked; rules alone 29% (4/14). Small sample |
+| Prompt-injection red team, new unseen split (22 attacks / 22 benign questions) | 3B classifier: 68% (15/22) blocked, 1/22 benign wrongly blocked; 7B classifier: 95% (21/22), 0/22 wrongly blocked; rules alone 23% (5/22). One author, small sample |
 | Tests | 225 tests; 11-job CI incl. real Postgres/Redis/Qdrant stack, UI end-to-end, soak test, backup/restore, rollback |
 
 ## Quick start

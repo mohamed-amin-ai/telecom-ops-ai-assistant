@@ -87,11 +87,11 @@ missing, roughly in order of what would fail first:
 - **Third-party images are pinned** (`QDRANT_TAG`, `TIMESCALE_TAG`, ... in the compose files)
   instead of `:latest`, so a rebuild can't silently change versions; bumping them is now a
   deliberate edit that CI exercises. Langfuse is pinned to its `:2` major only.
-- **Only small free local models (3B class) have been measured.** There is no paid API in this
+- **Only small free local models (3B class) have been measured**, plus the 7B for the guardrail classifier only. There is no paid API in this
   repo, so quality with a larger model is unknown. `stack` covers the wiring against a fake
   fake LLM server (no key, no cost); `live-ollama` and `ragas-ollama` use real local models.
 - **Guardrail red-teaming is still one person's (mine) 122 cases**, not a professional
-  red-team engagement, and attack detection on unseen phrasings is about 70% with the LLM layer and under 30% with
+  red-team engagement, and attack detection on unseen phrasings is about 70% (3B) to 95% (7B) with the LLM layer and under 30% with
   rules alone -- see Red team above for what those numbers do and don't mean.
 - **The runbooks and KPI data are synthetic**, so every eval score is close to ceiling and
   says more about the pipeline than about real-world quality. `scripts/import_kpis.py` can
