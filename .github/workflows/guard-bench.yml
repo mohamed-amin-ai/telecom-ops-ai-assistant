@@ -1,0 +1,71 @@
+name: guard-bench
+
+# Measurement, not a gate: red-team and guardrail evals with the LLM classifier on CPU, for two
+# local models (3B, 7B) and two classifier prompts (the one before the indirect-ask examples,
+# and the current one). Slow on purpose; runs only when started by hand or when this file changes.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/guard-bench.yml"]
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["qwen2.5:3b-instruct", "qwen2.5:7b-instruct"]
+        prompt: [old, new]
+    env:
+      OLD_PROMPT_COMMIT: 64625cc
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Start Ollama (same pinned image as the stack) and pull the model
+        run: |
+          docker run -d --name ollama -p 11434:11434 -e OLLAMA_NUM_PARALLEL=1 -e OLLAMA_KEEP_ALIVE=-1 ollama/ollama:0.5.7
+          for i in $(seq 1 30); do curl -sf http://localhost:11434/api/tags >/dev/null && break; sleep 2; done
+          docker exec ollama ollama pull "${{ matrix.model }}"
+      - name: Use the classifier prompt under test
+        if: matrix.prompt == 'old'
+        run: git show "$OLD_PROMPT_COMMIT:app/guardrails.py" > app/guardrails.py
+      - name: Red team with the LLM classifier (all splits)
+        env:
+          OLLAMA_API_BASE: http://localhost:11434
+          GUARD_MODEL: ollama_chat/${{ matrix.model }}
+          GUARD_LLM: "1"
+        run: |
+          set -o pipefail
+          python -m evals.run_redteam --llm 2>&1 | grep -E '^\{|^MISS|^FALSE' | tee redteam.txt
+      - name: Guardrail scope eval with the LLM classifier
+        continue-on-error: true
+        env:
+          OLLAMA_API_BASE: http://localhost:11434
+          GUARD_MODEL: ollama_chat/${{ matrix.model }}
+          GUARD_LLM: "1"
+        run: |
+          python -m evals.run_guard_eval 2>&1 | tee guard.txt
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.model }} / ${{ matrix.prompt }} prompt"
+            echo '```'
+            grep '^{' redteam.txt || true
+            echo '```'
+            echo "Misses and the guardrail eval are in the uploaded artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guard-${{ strategy.job-index }}-${{ matrix.prompt }}
+          path: |
+            redteam.txt
+            guard.txt
